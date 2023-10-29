@@ -1,3 +1,10 @@
+
+# tutorials
+# https://www.pythonguis.com/tutorials/creating-your-first-pyqt-window/
+# https://www.pythontutorial.net/pyqt/
+# and
+# https://superuser.com/questions/1791373/location-of-wsl-home-directory-in-windows
+
 # Set up logging first in case other imports fail
 
 import datetime
@@ -33,6 +40,7 @@ import PyQt5.QtWidgets as Widgets
 import PyQt5.QtGui as Gui
 import PyQt5.QtCore as Core
 import pytesseract
+
 
 if hasattr(sys, '_MEIPASS'):
     # --- get tesseract runnable ---
@@ -105,58 +113,18 @@ for i in range(0, len(results["text"])):
         curr_text_dict["num"] = results["word_num"][i]
         curr_text_dict["text"] = text
     else:
-#        curr_text_dict["x"] = min(curr_text_dict["x"], results["left"][i])
-#        curr_text_dict["y"] = min(curr_text_dict["y"], results["top"][i])
-#        curr_text_dict["w"] = max(curr_text_dict["w"], results["width"][i])
-#        curr_text_dict["h"] = max(curr_text_dict["h"], results["height"][i])
         curr_text_dict["w"] = results["width"][i] + results["left"][i] - curr_text_dict["x"]
         curr_text_dict["h"] = max(curr_text_dict["h"], results["height"][i] + results["top"][i] - curr_text_dict["y"])
         curr_text_dict["num"] = results["word_num"][i]
         curr_text_dict["text"] += " " + text
 
-    # extract the bounding box coordinates of the text region from
-    # the current result
-#    x = results["left"][i]
-#    y = results["top"][i]
-#    w = results["width"][i]
-#    h = results["height"][i]
-#    # extract the OCR text itself along with the confidence of the
-#    # text localization
-#    text = results["text"][i]
-#    conf = int(results["conf"][i])
-
-# filter out weak confidence text localizations
-#    if conf > args["min_conf"]:
-#        # display the confidence and text to our terminal
-#        print("Confidence: {}".format(conf))
-#        print("Text: {}".format(text))
-#        print("")
-#        # strip out non-ASCII text so we can draw the text on the image
-#        # using OpenCV, then draw a bounding box around the text along
-#        # with the text itself
-#        text = "".join([c if ord(c) < 128 else "" for c in text]).strip()
-#        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-#        cv2.putText(image, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
-#            0.5, (0, 0, 255), 1)
-# show the output image
-
-#for p in text_dict.values():
-#    for b in p.values():
-#        for par in b.values():
-#            for l in par.values():
-#                cv2.rectangle(image, (l["x"], l["y"]), (l["x"] + l["w"], l["y"] + l["h"]), (0, 255, 0), 2)
-#                cv2.putText(image, "!" + l["text"], (l["x"], l["y"] - 10), cv2.FONT_HERSHEY_SIMPLEX,
-#                    0.5, (0, 0, 255), 1)
-
-#cv2.imshow("Image", image)
-#cv2.waitKey(0)
-
 class MyImageWidget(Widgets.QLabel):
-    def __init__(self, boxes):
+    def __init__(self, application, boxes):
         super().__init__()
 
         self.boxes = {box: False for box in boxes}
         self.ratio = 1
+        self.application = application
 
     def set_menu_item_edit(self, menu_item_edit):
         self.menu_item_edit = menu_item_edit
@@ -165,12 +133,13 @@ class MyImageWidget(Widgets.QLabel):
         super().setPixmap(pixmap)
         self.pixmap_height = pixmap.height()
 
+    # from https://likegeeks.com/pyqt5-drawing-tutorial/#Draw_on_Image
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = Gui.QPainter(self)
         height_adjust = math.floor((self.height() - self.pixmap_height)/2)
         for box, clicked in self.boxes.items():
-            rect = [math.floor(self.ratio*val) for val in box]
+            rect = [math.floor(self.ratio*val) for val in box[:4]]
             rect[1] = rect[1] + height_adjust
             if not clicked:
                 painter.setPen(Gui.QPen(Core.Qt.red, 2))
@@ -185,7 +154,11 @@ class MyImageWidget(Widgets.QLabel):
         for box in self.boxes:
             if box[0] <= x/self.ratio <= box[0] + box[2] and box[1] <= y/self.ratio <= box[1] + box[3]:
                 self.boxes[box] = True
-                self.menu_item_edit.setText(box["text"])
+                if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier: #Core.Qt.KeyboardModifiers.ShiftModifier:
+                    self.menu_item_edit.setText(box[4])
+                else:
+                    self.menu_item_edit.setText(self.menu_item_edit.text() + " " + box[4])
+
                 self.repaint()
 
 class MyWindow(Widgets.QMainWindow):
@@ -199,21 +172,63 @@ class MyWindow(Widgets.QMainWindow):
         self.pixmap = Gui.QPixmap(path)
         self.base_height = self.pixmap.height()
         self.base_width = self.pixmap.width()
-        self.image_widget = MyImageWidget(boxes) #Widgets.QLabel()
+        self.image_widget = MyImageWidget(app, boxes) #Widgets.QLabel()
         self.image_widget.setMinimumWidth(100)
         self.image_widget.setMinimumHeight(100)
         self.image_widget.setPixmap(self.pixmap)
         self.image_widget.installEventFilter(self)
+        # the second parameter means this widget will stretch at rate 1
+        # since nothing else is given a stretch parameter, this means this widget
+        # is the only widget that will stretch when the window resizes
+        central_layout.addWidget(self.image_widget, 1)
 
-        central_layout.addWidget(self.image_widget)
         right_column = Widgets.QVBoxLayout()
         central_layout.addLayout(right_column)
-        right_column.addWidget(Widgets.QLabel("Menu item name"))
+
+        school_name_row = Widgets.QHBoxLayout()
+        right_column.addLayout(school_name_row)
+        school_name_row.addWidget(Widgets.QLabel("School name:"))
+        self.school_name_edit = Widgets.QLineEdit()
+        school_name_row.addWidget(self.school_name_edit)
+        self.school_type_select = Widgets.QComboBox()
+        self.school_type_select.addItems([
+            "Elementary",
+            "Middle",
+            "High"
+        ])
+        self.school_type_select.setEditable(True)
+        self.school_type_select.setInsertPolicy(Widgets.QComboBox.NoInsert)
+        school_name_row.addWidget(self.school_type_select)
+
+        item_layout = Widgets.QHBoxLayout()
+        right_column.addLayout(item_layout)
+
+        menu_item_layout = Widgets.QVBoxLayout()
+        item_layout.addLayout(menu_item_layout)
+
+        menu_item_layout.addWidget(Widgets.QLabel("Menu item name:"))
         self.menu_item_edit = Widgets.QLineEdit()
-        self.menu_item_edit.setMaximumWidth(100)
-        right_column.addWidget(self.menu_item_edit)
+        self.menu_item_edit.setMinimumWidth(400)
+        menu_item_layout.addWidget(self.menu_item_edit)
         self.image_widget.set_menu_item_edit(self.menu_item_edit)
-        #right_column.setSpacing(100)
+
+        self.plant_based_buttons = Widgets.QButtonGroup()
+        plant_based_layout = Widgets.QVBoxLayout()
+        plant_based_layout.addWidget(Widgets.QLabel("Plant based?"))
+        item_layout.addLayout(plant_based_layout)
+        for text in "Yes", "Maybe?", "No":
+            button = Widgets.QRadioButton(text)
+            button.click()
+            plant_based_layout.addWidget(button)
+            self.plant_based_buttons.addButton(button)
+
+        item_layout.addWidget(Widgets.QLabel("Count:"))
+        self.item_count = Widgets.QLineEdit()
+        self.item_count.setInputMask("00")
+        self.item_count.setText("1")
+        item_layout.addWidget(self.item_count)
+        self.item_count_sticky = Widgets.QCheckBox("sticky")
+        item_layout.addWidget(self.item_count_sticky)
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
@@ -224,14 +239,8 @@ class MyWindow(Widgets.QMainWindow):
             self.image_widget.setPixmap(
                 self.pixmap.scaled(math.floor(self.base_width*ratio), math.floor(self.base_height*ratio), transformMode=Core.Qt.SmoothTransformation)
             )
-#            self.image_widget.setPixmap(self.pixmap.scaled(
-#                self.image_widget.size(), Core.Qt.KeepAspectRatio,
 #, menu_item_edit                Core.Qt.SmoothTransformation))
         return super().eventFilter(source, event)
-
-#window = Widgets.QLabel()
-#window.setPixmap(PyQt5.QtGui.QPixmap(path))
-#window = Widgets.QMainWindow()
 
 window = MyWindow(
     image_fname,
