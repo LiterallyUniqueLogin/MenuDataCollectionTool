@@ -5,11 +5,11 @@
 # and
 # https://superuser.com/questions/1791373/location-of-wsl-home-directory-in-windows
 
-# Set up logging first in case other imports fail
-
 import datetime
 import logging
 import sys
+
+# ---- Set up logging first in case imports fail ------
 
 logging.basicConfig(filename='menu_scanner.log', encoding='utf-8', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -36,11 +36,13 @@ import tempfile
 
 # import cv2 for images
 import fitz
+import polars as pl
 import PyQt5.QtWidgets as Widgets
 import PyQt5.QtGui as Gui
 import PyQt5.QtCore as Core
 import pytesseract
 
+# ---- Set up tessseract ----
 
 if hasattr(sys, '_MEIPASS'):
     # --- get tesseract runnable ---
@@ -58,65 +60,69 @@ if hasattr(sys, '_MEIPASS'):
 #rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 #doc = fitz.open(r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023.pdf")
-doc = fitz.open('/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf')
-image_file = tempfile.NamedTemporaryFile(suffix='.png')
-image_fname = image_file.name
-doc[0].\
-    get_pixmap(matrix=fitz.Matrix(8,8)).\
-    save(image_fname) #r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023_pymupdf.png")
 
-app = Widgets.QApplication([])
+def create_image_from_pdf(pdf_fname):
+    doc = fitz.open(pdf_fname)
+    image_file = tempfile.NamedTemporaryFile(suffix='.png')
+    image_fname = image_file.name
+    doc[0].\
+        get_pixmap(matrix=fitz.Matrix(8,8)).\
+        save(image_fname) #r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023_pymupdf.png")
+    return image_file
 
-pix_width = Gui.QPixmap(image_fname).width()
+def ocr(image_fname):
+    pix_width = Gui.QPixmap(image_fname).width()
 
-#results = pytesseract.image_to_data(rgb, output_type=pytesseract.Output.DICT)
-results = pytesseract.image_to_data(image_fname, output_type=pytesseract.Output.DICT)
+    #results = pytesseract.image_to_data(rgb, output_type=pytesseract.Output.DICT)
+    results = pytesseract.image_to_data(image_fname, output_type=pytesseract.Output.DICT)
 
-# loop over each of the individual text localizations
-text_dict = {}
-for i in range(0, len(results["text"])):
-#    conf = int(results["conf"][i])
-#    if conf < 0.2:
-#        continue
-    force_break = "|" in results["text"][i]
+    # loop over each of the individual text localizations
+    text_dict = {}
+    for i in range(0, len(results["text"])):
+    #    conf = int(results["conf"][i])
+    #    if conf < 0.2:
+    #        continue
+        force_break = "|" in results["text"][i]
 
-    text = "".join([c if ord(c) < 128 and c not in "_|" else "" for c in results["text"][i]]).strip()
-    if text == "":
-        continue
+        text = "".join([c if ord(c) < 128 and c not in "_|" else "" for c in results["text"][i]]).strip()
+        if text == "":
+            continue
 
 
-    curr_text_dict = text_dict
-    for level in "page_num", "block_num", "par_num", "line_num":
-        if results[level][i] not in curr_text_dict:
-            if level != "line_num":
-                curr_text_dict[results[level][i]] = {}
-            else:
-                curr_text_dict[results[level][i]] = []
-        curr_text_dict = curr_text_dict[results[level][i]]
+        curr_text_dict = text_dict
+        for level in "page_num", "block_num", "par_num", "line_num":
+            if results[level][i] not in curr_text_dict:
+                if level != "line_num":
+                    curr_text_dict[results[level][i]] = {}
+                else:
+                    curr_text_dict[results[level][i]] = []
+            curr_text_dict = curr_text_dict[results[level][i]]
 
-    line_blocks = curr_text_dict
-    if len(line_blocks) == 0:
-        new = True
-    else:
-        curr_text_dict = line_blocks[-1]
-        assert curr_text_dict["num"] < results["word_num"][i]
-        assert curr_text_dict["x"] < results["left"][i]
-        new = results["left"][i] - (curr_text_dict["x"] + curr_text_dict["w"]) > 0.01*pix_width
+        line_blocks = curr_text_dict
+        if len(line_blocks) == 0:
+            new = True
+        else:
+            curr_text_dict = line_blocks[-1]
+            assert curr_text_dict["num"] < results["word_num"][i]
+            assert curr_text_dict["x"] < results["left"][i]
+            new = results["left"][i] - (curr_text_dict["x"] + curr_text_dict["w"]) > 0.01*pix_width
 
-    if force_break or new:
-        curr_text_dict = {}
-        line_blocks.append(curr_text_dict)
-        curr_text_dict["x"] = results["left"][i]
-        curr_text_dict["y"] = results["top"][i]
-        curr_text_dict["w"] = results["width"][i]
-        curr_text_dict["h"] = results["height"][i]
-        curr_text_dict["num"] = results["word_num"][i]
-        curr_text_dict["text"] = text
-    else:
-        curr_text_dict["w"] = results["width"][i] + results["left"][i] - curr_text_dict["x"]
-        curr_text_dict["h"] = max(curr_text_dict["h"], results["height"][i] + results["top"][i] - curr_text_dict["y"])
-        curr_text_dict["num"] = results["word_num"][i]
-        curr_text_dict["text"] += " " + text
+        if force_break or new:
+            curr_text_dict = {}
+            line_blocks.append(curr_text_dict)
+            curr_text_dict["x"] = results["left"][i]
+            curr_text_dict["y"] = results["top"][i]
+            curr_text_dict["w"] = results["width"][i]
+            curr_text_dict["h"] = results["height"][i]
+            curr_text_dict["num"] = results["word_num"][i]
+            curr_text_dict["text"] = text
+        else:
+            curr_text_dict["w"] = results["width"][i] + results["left"][i] - curr_text_dict["x"]
+            curr_text_dict["h"] = max(curr_text_dict["h"], results["height"][i] + results["top"][i] - curr_text_dict["y"])
+            curr_text_dict["num"] = results["word_num"][i]
+            curr_text_dict["text"] += " " + text
+
+    return text_dict
 
 class MyImageWidget(Widgets.QLabel):
     def __init__(self, application, boxes):
@@ -154,16 +160,65 @@ class MyImageWidget(Widgets.QLabel):
         for box in self.boxes:
             if box[0] <= x/self.ratio <= box[0] + box[2] and box[1] <= y/self.ratio <= box[1] + box[3]:
                 self.boxes[box] = True
-                if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier: #Core.Qt.KeyboardModifiers.ShiftModifier:
+                if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier:
                     self.menu_item_edit.setText(box[4])
                 else:
                     self.menu_item_edit.setText(self.menu_item_edit.text() + " " + box[4])
 
                 self.repaint()
 
-class MyWindow(Widgets.QMainWindow):
-    def __init__(self, path, boxes):
+class PolarsTableModel(Core.QAbstractTableModel):
+    def __init__(self, df, df_schema):
         super().__init__()
+        self.df = df
+        self.df_schema = df_schema
+
+    def rowCount(self, index): # unclear what index is fore
+        return self.df.shape[0]
+
+    def columnCount(self, index): # unclear what index is fore
+        return self.df.shape[1] - 2
+
+    def headerData(self, section, orientation, role):
+        if role == Core.Qt.DisplayRole and orientation == Core.Qt.Horizontal and section < self.df.shape[1] - 2:
+            return Core.QVariant(self.df.columns[section + 2])
+        return Core.QVariant()
+
+    def data(self, index, role):
+        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1] - 2:
+            return Core.QVariant()
+
+        if role == Core.Qt.DisplayRole:
+            return Core.QVariant(self.df[index.row(), index.column() + 2])
+
+        return Core.QVariant()
+
+    def insert_new_menu_item(self, menu_item_data):
+        row = self.df.with_row_count().filter(pl.col('menu_item') == menu_item_data[2])
+        assert row.shape[0] <= 1
+        if row.shape[0] == 0:
+            self.beginInsertRows(Core.QModelIndex(), 0, 0)
+            self.df = pl.DataFrame([menu_item_data], schema=self.df_schema).vstack(self.df)
+            self.endInsertRows()
+        else:
+            row_nr = row['row_nr'].item()
+            self.df = self.df.with_columns([
+                pl.when(
+                    pl.col('menu_item') != menu_item_data[2]
+                ).then(
+                    pl.col('count')
+                ).otherwise(
+                    pl.col('count') + menu_item_data[3]
+                )
+            ])
+            cell = self.createIndex(row_nr, 1)
+            self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole]) # should possibly be EditRole
+
+class MyWindow(Widgets.QMainWindow):
+    def __init__(self, app, df, df_schema, path, boxes):
+        super().__init__()
+
+        self.application = app
 
         central_widget = Widgets.QWidget()
         self.setCentralWidget(central_widget)
@@ -190,6 +245,10 @@ class MyWindow(Widgets.QMainWindow):
         school_name_row.addWidget(Widgets.QLabel("School name:"))
         self.school_name_edit = Widgets.QLineEdit()
         school_name_row.addWidget(self.school_name_edit)
+
+        school_type_col = Widgets.QVBoxLayout()
+        school_name_row.addLayout(school_type_col)
+        school_type_col.addWidget(Widgets.QLabel("School type:"))
         self.school_type_select = Widgets.QComboBox()
         self.school_type_select.addItems([
             "Elementary",
@@ -198,7 +257,8 @@ class MyWindow(Widgets.QMainWindow):
         ])
         self.school_type_select.setEditable(True)
         self.school_type_select.setInsertPolicy(Widgets.QComboBox.NoInsert)
-        school_name_row.addWidget(self.school_type_select)
+        self.school_type_select.setCurrentIndex(-1)
+        school_type_col.addWidget(self.school_type_select)
 
         item_layout = Widgets.QHBoxLayout()
         right_column.addLayout(item_layout)
@@ -216,11 +276,11 @@ class MyWindow(Widgets.QMainWindow):
         plant_based_layout = Widgets.QVBoxLayout()
         plant_based_layout.addWidget(Widgets.QLabel("Plant based?"))
         item_layout.addLayout(plant_based_layout)
-        for text in "Yes", "Maybe?", "No":
+        for id_, text in enumerate(("Yes", "Maybe?", "No")):
             button = Widgets.QRadioButton(text)
             button.click()
             plant_based_layout.addWidget(button)
-            self.plant_based_buttons.addButton(button)
+            self.plant_based_buttons.addButton(button, id_)
 
         item_layout.addWidget(Widgets.QLabel("Count:"))
         self.item_count = Widgets.QLineEdit()
@@ -229,6 +289,11 @@ class MyWindow(Widgets.QMainWindow):
         item_layout.addWidget(self.item_count)
         self.item_count_sticky = Widgets.QCheckBox("sticky")
         item_layout.addWidget(self.item_count_sticky)
+        
+        self.table_model = PolarsTableModel(df, df_schema)
+        table_view = Widgets.QTableView()
+        table_view.setModel(self.table_model)
+        right_column.addWidget(table_view, 1)
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
@@ -239,10 +304,50 @@ class MyWindow(Widgets.QMainWindow):
             self.image_widget.setPixmap(
                 self.pixmap.scaled(math.floor(self.base_width*ratio), math.floor(self.base_height*ratio), transformMode=Core.Qt.SmoothTransformation)
             )
-#, menu_item_edit                Core.Qt.SmoothTransformation))
+            #, menu_item_edit                Core.Qt.SmoothTransformation))
         return super().eventFilter(source, event)
 
+    def keyPressEvent(self, event):
+        # add to table
+        if event.type() == Core.QEvent.KeyPress and \
+           event.key() == Core.Qt.Key_Return:
+            menu_item_data = [
+                self.school_name_edit.text(),
+                self.school_type_select.currentText(),
+                self.menu_item_edit.text(),
+                int(self.item_count.text()),
+                ['Y', '?', 'N'][self.plant_based_buttons.checkedId()]
+            ]
+            self.table_model.insert_new_menu_item(menu_item_data)
+            self.menu_item_edit.clear()
+            
+        # switch plant based status
+        if event.type() == Core.QEvent.KeyPress and \
+           event.key() == Core.Qt.Key_P and \
+           self.application.keyboardModifiers() & Core.Qt.ControlModifier:
+            self.plant_based_buttons.button((self.plant_based_buttons.checkedId() + 1) % 3).click()
+
+# --- Start everything ---
+app = Widgets.QApplication([])
+
+df_schema={
+    'school_district': str,
+    'district_type': str,
+    'menu_item': str,
+    'count': int,
+    'plant_based': str
+}
+df = pl.DataFrame(schema=df_schema)
+
+pdf_fname = '/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf'
+image_file = create_image_from_pdf(pdf_fname)
+image_fname = image_file.name
+text_dict = ocr(image_fname)
+
 window = MyWindow(
+    app,
+    df,
+    df_schema,
     image_fname,
     [(line_block["x"], line_block["y"], line_block["w"], line_block["h"], line_block["text"])
         for p in text_dict.values()
