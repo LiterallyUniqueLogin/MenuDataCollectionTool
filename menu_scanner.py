@@ -168,10 +168,14 @@ class MyImageWidget(Widgets.QLabel):
                 self.repaint()
 
 class PolarsTableModel(Core.QAbstractTableModel):
-    def __init__(self, df, df_schema):
+    def __init__(self, df, df_schema, out_fname):
         super().__init__()
         self.df = df
         self.df_schema = df_schema
+
+        self.highlight_first = False
+        self.count_highlight = None
+        self.out_fname = out_fname
 
     def rowCount(self, index): # unclear what index is fore
         return self.df.shape[0]
@@ -191,6 +195,12 @@ class PolarsTableModel(Core.QAbstractTableModel):
         if role == Core.Qt.DisplayRole:
             return Core.QVariant(self.df[index.row(), index.column() + 2])
 
+        if role == Core.Qt.BackgroundRole and self.highlight_first and index.row() == 0:
+            return Gui.QBrush(Gui.QColor(0, 255, 0))
+
+        if role == Core.Qt.BackgroundRole and index.row() == self.count_highlight and index.column() == 1:
+            return Gui.QBrush(Gui.QColor(0, 255, 0))
+
         return Core.QVariant()
 
     def insert_new_menu_item(self, menu_item_data):
@@ -200,6 +210,13 @@ class PolarsTableModel(Core.QAbstractTableModel):
             self.beginInsertRows(Core.QModelIndex(), 0, 0)
             self.df = pl.DataFrame([menu_item_data], schema=self.df_schema).vstack(self.df)
             self.endInsertRows()
+            if not self.highlight_first:
+                self.highlight_first = True
+                self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(0, 2), [Core.Qt.BackgroundRole])
+            if self.count_highlight:
+                old_count_cell = self.createIndex(self.count_highlight, 1)
+                self.dataChanged.emit(old_count_cell, old_count_cell, [Core.Qt.BackgroundRole])
+            self.count_highlight = None
         else:
             row_nr = row['row_nr'].item()
             self.df = self.df.with_columns([
@@ -212,10 +229,22 @@ class PolarsTableModel(Core.QAbstractTableModel):
                 )
             ])
             cell = self.createIndex(row_nr, 1)
-            self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole]) # should possibly be EditRole
+            if self.highlight_first:
+                self.highlight_first = False
+                self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(0, 2), [Core.Qt.BackgroundRole])
+            elif self.count_highlight:
+                old_count_cell = self.createIndex(self.count_highlight, 1)
+                self.dataChanged.emit(old_count_cell, old_count_cell, [Core.Qt.BackgroundRole])
+            self.count_highlight = row_nr
+            self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole]) # should possibly be EditRole
+        self.save()
+
+    def save(self):
+        if self.out_fname:
+            self.df.write_csv(self.out_fname)
 
 class MyWindow(Widgets.QMainWindow):
-    def __init__(self, app, df, df_schema, path, boxes):
+    def __init__(self, app, df_schema, path, boxes):
         super().__init__()
 
         self.application = app
@@ -239,6 +268,16 @@ class MyWindow(Widgets.QMainWindow):
 
         right_column = Widgets.QVBoxLayout()
         central_layout.addLayout(right_column)
+
+        load_layout = Widgets.QHBoxLayout()
+        right_column.addLayout(load_layout)
+        choose_new_table_button = Widgets.QPushButton("Start new table")
+        choose_new_table_button.clicked.connect(self.choose_new_table)
+        load_layout.addWidget(choose_new_table_button)
+
+        load_existing_table_button = Widgets.QPushButton("Load existing table")
+        load_existing_table_button.clicked.connect(self.load_existing_table)
+        load_layout.addWidget(load_existing_table_button)
 
         school_name_row = Widgets.QHBoxLayout()
         right_column.addLayout(school_name_row)
@@ -289,11 +328,29 @@ class MyWindow(Widgets.QMainWindow):
         item_layout.addWidget(self.item_count)
         self.item_count_sticky = Widgets.QCheckBox("sticky")
         item_layout.addWidget(self.item_count_sticky)
-        
-        self.table_model = PolarsTableModel(df, df_schema)
-        table_view = Widgets.QTableView()
-        table_view.setModel(self.table_model)
-        right_column.addWidget(table_view, 1)
+       
+        self.table_model = None
+        self.table_view = Widgets.QTableView()
+        right_column.addWidget(self.table_view, 1)
+
+    def choose_new_table(self):
+        fname = Widgets.QFileDialog.getSaveFileName(self, "File to start new table", filter="CSV files (*.csv)")[0]
+        if fname:
+            if not fname.endswith('.csv'):
+                fname += '.csv'
+            df = pl.DataFrame(schema=df_schema)
+            self.table_model = PolarsTableModel(df, df_schema, fname)
+            self.table_view.setModel(self.table_model)
+
+    def load_existing_table(self):
+        fname = Widgets.QFileDialog.getSaveFileName(self, "File to start new table", filter="CSV files (*.csv)")
+        if fname is not None:
+            fname = fname[0]
+            if not fname.endswith('.csv'):
+                fname += '.csv'
+            df = pl.DataFrame(schema=df_schema)
+            self.table_model = PolarsTableModel(df, df_schema, fname)
+            self.table_view.setModel(self.table_model)
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
@@ -310,7 +367,8 @@ class MyWindow(Widgets.QMainWindow):
     def keyPressEvent(self, event):
         # add to table
         if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_Return:
+           event.key() == Core.Qt.Key_Return and \
+           not self.table_model is None:
             menu_item_data = [
                 self.school_name_edit.text(),
                 self.school_type_select.currentText(),
@@ -319,6 +377,7 @@ class MyWindow(Widgets.QMainWindow):
                 ['Y', '?', 'N'][self.plant_based_buttons.checkedId()]
             ]
             self.table_model.insert_new_menu_item(menu_item_data)
+            self.table_view.resizeColumnsToContents()
             self.menu_item_edit.clear()
             
         # switch plant based status
@@ -337,7 +396,6 @@ df_schema={
     'count': int,
     'plant_based': str
 }
-df = pl.DataFrame(schema=df_schema)
 
 pdf_fname = '/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf'
 image_file = create_image_from_pdf(pdf_fname)
@@ -346,7 +404,6 @@ text_dict = ocr(image_fname)
 
 window = MyWindow(
     app,
-    df,
     df_schema,
     image_fname,
     [(line_block["x"], line_block["y"], line_block["w"], line_block["h"], line_block["text"])
