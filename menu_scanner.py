@@ -167,6 +167,12 @@ class MyImageWidget(Widgets.QLabel):
 
                 self.repaint()
 
+# Model view tutorial I've used
+# https://doc.qt.io/qt-6/modelview.html#2-5-the-minimal-editing-example
+# Model view tutorials that I haven't used much:
+# https://doc.qt.io/qt-6/model-view-programming.html#model-view-classes
+
+
 class PolarsTableModel(Core.QAbstractTableModel):
     def __init__(self, df, df_schema, out_fname):
         super().__init__()
@@ -181,19 +187,20 @@ class PolarsTableModel(Core.QAbstractTableModel):
         return self.df.shape[0]
 
     def columnCount(self, index): # unclear what index is fore
-        return self.df.shape[1] - 2
+        return self.df.shape[1]
 
     def headerData(self, section, orientation, role):
-        if role == Core.Qt.DisplayRole and orientation == Core.Qt.Horizontal and section < self.df.shape[1] - 2:
-            return Core.QVariant(self.df.columns[section + 2])
+        if role == Core.Qt.DisplayRole and orientation == Core.Qt.Horizontal and section < self.df.shape[1]:
+            section = (section + 2) % self.df.shape[1]
+            return Core.QVariant(self.df.columns[section])
         return Core.QVariant()
 
     def data(self, index, role):
-        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1] - 2:
+        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1]:
             return Core.QVariant()
 
         if role == Core.Qt.DisplayRole:
-            return Core.QVariant(self.df[index.row(), index.column() + 2])
+            return Core.QVariant(self.df[index.row(), (index.column() + 2) % self.df.shape[1]])
 
         if role == Core.Qt.BackgroundRole and self.highlight_first and index.row() == 0:
             return Gui.QBrush(Gui.QColor(0, 255, 0))
@@ -203,8 +210,15 @@ class PolarsTableModel(Core.QAbstractTableModel):
 
         return Core.QVariant()
 
+    def flags(self, index):
+        return Core.Qt.ItemIsSelectable | Core.Qt.ItemIsEditable | Core.Qt.ItemIsEnabled
+
     def insert_new_menu_item(self, menu_item_data):
-        row = self.df.with_row_count().filter(pl.col('menu_item') == menu_item_data[2])
+        row = self.df.with_row_count().filter(
+            (pl.col('school_district') == menu_item_data[0]) &
+            (pl.col('district_type') == menu_item_data[1]) &
+            (pl.col('menu_item') == menu_item_data[2])
+        )
         assert row.shape[0] <= 1
         if row.shape[0] == 0:
             self.beginInsertRows(Core.QModelIndex(), 0, 0)
@@ -247,7 +261,10 @@ class MyWindow(Widgets.QMainWindow):
     def __init__(self, app, df_schema, path, boxes):
         super().__init__()
 
+        self.setWindowState(Core.Qt.WindowMaximized)
+
         self.application = app
+        self.df_schema = df_schema
 
         central_widget = Widgets.QWidget()
         self.setCentralWidget(central_widget)
@@ -256,7 +273,7 @@ class MyWindow(Widgets.QMainWindow):
         self.pixmap = Gui.QPixmap(path)
         self.base_height = self.pixmap.height()
         self.base_width = self.pixmap.width()
-        self.image_widget = MyImageWidget(app, boxes) #Widgets.QLabel()
+        self.image_widget = MyImageWidget(app, boxes)
         self.image_widget.setMinimumWidth(100)
         self.image_widget.setMinimumHeight(100)
         self.image_widget.setPixmap(self.pixmap)
@@ -271,13 +288,13 @@ class MyWindow(Widgets.QMainWindow):
 
         load_layout = Widgets.QHBoxLayout()
         right_column.addLayout(load_layout)
-        choose_new_table_button = Widgets.QPushButton("Start new table")
-        choose_new_table_button.clicked.connect(self.choose_new_table)
-        load_layout.addWidget(choose_new_table_button)
+        self.choose_new_table_button = Widgets.QPushButton("Start new table")
+        self.choose_new_table_button.clicked.connect(self.choose_new_table)
+        load_layout.addWidget(self.choose_new_table_button)
 
-        load_existing_table_button = Widgets.QPushButton("Load existing table")
-        load_existing_table_button.clicked.connect(self.load_existing_table)
-        load_layout.addWidget(load_existing_table_button)
+        self.load_existing_table_button = Widgets.QPushButton("Load existing table")
+        self.load_existing_table_button.clicked.connect(self.load_existing_table)
+        load_layout.addWidget(self.load_existing_table_button)
 
         school_name_row = Widgets.QHBoxLayout()
         right_column.addLayout(school_name_row)
@@ -303,7 +320,10 @@ class MyWindow(Widgets.QMainWindow):
         right_column.addLayout(item_layout)
 
         menu_item_layout = Widgets.QVBoxLayout()
-        item_layout.addLayout(menu_item_layout)
+        # the second parameter means this widget will stretch at rate 1
+        # since nothing else is given a stretch parameter, this means this widget
+        # is the only widget that will stretch when the window resizes
+        item_layout.addLayout(menu_item_layout, 1)
 
         menu_item_layout.addWidget(Widgets.QLabel("Menu item name:"))
         self.menu_item_edit = Widgets.QLineEdit()
@@ -313,7 +333,7 @@ class MyWindow(Widgets.QMainWindow):
 
         self.plant_based_buttons = Widgets.QButtonGroup()
         plant_based_layout = Widgets.QVBoxLayout()
-        plant_based_layout.addWidget(Widgets.QLabel("Plant based?"))
+        plant_based_layout.addWidget(Widgets.QLabel("Plant based:"))
         item_layout.addLayout(plant_based_layout)
         for id_, text in enumerate(("Yes", "Maybe?", "No")):
             button = Widgets.QRadioButton(text)
@@ -321,16 +341,28 @@ class MyWindow(Widgets.QMainWindow):
             plant_based_layout.addWidget(button)
             self.plant_based_buttons.addButton(button, id_)
 
+        self.veg_buttons = Widgets.QButtonGroup()
+        veg_layout = Widgets.QVBoxLayout()
+        veg_layout.addWidget(Widgets.QLabel("Vegetarian:"))
+        item_layout.addLayout(veg_layout)
+        for id_, text in enumerate(("Yes", "Maybe?", "No")):
+            button = Widgets.QRadioButton(text)
+            button.click()
+            veg_layout.addWidget(button)
+            self.veg_buttons.addButton(button, id_)
+
         item_layout.addWidget(Widgets.QLabel("Count:"))
         self.item_count = Widgets.QLineEdit()
         self.item_count.setInputMask("00")
         self.item_count.setText("1")
+        self.item_count.setMaximumWidth(50)
         item_layout.addWidget(self.item_count)
         self.item_count_sticky = Widgets.QCheckBox("sticky")
         item_layout.addWidget(self.item_count_sticky)
        
         self.table_model = None
         self.table_view = Widgets.QTableView()
+        self.table_view.setCornerButtonEnabled(False)
         right_column.addWidget(self.table_view, 1)
 
     def choose_new_table(self):
@@ -338,19 +370,36 @@ class MyWindow(Widgets.QMainWindow):
         if fname:
             if not fname.endswith('.csv'):
                 fname += '.csv'
-            df = pl.DataFrame(schema=df_schema)
+            df = pl.DataFrame(schema=self.df_schema)
             self.table_model = PolarsTableModel(df, df_schema, fname)
             self.table_view.setModel(self.table_model)
+            #self.set_table_view_sizing()
+        for button in self.choose_new_table_button, self.load_existing_table_button:
+            button.setPalette(app.palette())
 
     def load_existing_table(self):
-        fname = Widgets.QFileDialog.getSaveFileName(self, "File to start new table", filter="CSV files (*.csv)")
-        if fname is not None:
-            fname = fname[0]
-            if not fname.endswith('.csv'):
-                fname += '.csv'
-            df = pl.DataFrame(schema=df_schema)
-            self.table_model = PolarsTableModel(df, df_schema, fname)
+        fname = Widgets.QFileDialog.getOpenFileName(self, "CSV file to load", filter="CSV files (*.csv)")[0]
+        if fname:
+            df = pl.read_csv(fname)
+            # TODO don't crash if not true
+            assert list(df.columns) == list(self.df_schema.keys())
+            self.table_model = PolarsTableModel(df, self.df_schema, fname)
             self.table_view.setModel(self.table_model)
+            #self.set_table_view_sizing()
+        for button in self.choose_new_table_button, self.load_existing_table_button:
+            button.setPalette(app.palette())
+
+    def set_table_view_sizing(self):
+        self.table_view.horizontalHeader().resizeSection(0, 100)
+        self.table_view.horizontalHeader().setSectionResizeMode(0, Widgets.QHeaderView.Fixed)
+        self.table_view.horizontalHeader().resizeSection(1, 100)
+        self.table_view.horizontalHeader().setSectionResizeMode(1, Widgets.QHeaderView.Fixed)
+        self.table_view.horizontalHeader().setSectionResizeMode(2, Widgets.QHeaderView.Stretch)
+        self.table_view.horizontalHeader().setSectionResizeMode(3, Widgets.QHeaderView.ResizeToContents)
+        self.table_view.horizontalHeader().setSectionResizeMode(4, Widgets.QHeaderView.ResizeToContents)
+        self.table_view.horizontalHeader().setSectionResizeMode(5, Widgets.QHeaderView.ResizeToContents)
+        self.table_view.setTextElideMode(Core.Qt.ElideNone)
+        self.table_view.setWordWrap(True)
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
@@ -367,24 +416,37 @@ class MyWindow(Widgets.QMainWindow):
     def keyPressEvent(self, event):
         # add to table
         if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_Return and \
-           not self.table_model is None:
-            menu_item_data = [
-                self.school_name_edit.text(),
-                self.school_type_select.currentText(),
-                self.menu_item_edit.text(),
-                int(self.item_count.text()),
-                ['Y', '?', 'N'][self.plant_based_buttons.checkedId()]
-            ]
-            self.table_model.insert_new_menu_item(menu_item_data)
-            self.table_view.resizeColumnsToContents()
-            self.menu_item_edit.clear()
+           event.key() == Core.Qt.Key_Return:
+            if self.table_model is None:
+                for button in self.choose_new_table_button, self.load_existing_table_button:
+                    palette = button.palette()
+                    palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
+                    button.setPalette(palette)
+
+            if self.table_model is not None:
+                menu_item_data = [
+                    self.school_name_edit.text(),
+                    self.school_type_select.currentText(),
+                    self.menu_item_edit.text(),
+                    int(self.item_count.text()),
+                    ['Y', '?', 'N'][self.plant_based_buttons.checkedId()],
+                    ['Y', '?', 'N'][self.veg_buttons.checkedId()]
+                ]
+                self.table_model.insert_new_menu_item(menu_item_data)
+                self.table_view.resizeColumnsToContents()
+                self.menu_item_edit.clear()
             
         # switch plant based status
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_P and \
            self.application.keyboardModifiers() & Core.Qt.ControlModifier:
             self.plant_based_buttons.button((self.plant_based_buttons.checkedId() + 1) % 3).click()
+
+        # switch plant based status
+        if event.type() == Core.QEvent.KeyPress and \
+           event.key() == Core.Qt.Key_V and \
+           self.application.keyboardModifiers() & Core.Qt.ControlModifier:
+            self.veg_buttons.button(max((self.veg_buttons.checkedId() + 1) % 3, self.plant_based_buttons.checkedId())).click()
 
 # --- Start everything ---
 app = Widgets.QApplication([])
@@ -394,7 +456,8 @@ df_schema={
     'district_type': str,
     'menu_item': str,
     'count': int,
-    'plant_based': str
+    'plant_based': str,
+    'vegetarian': str
 }
 
 pdf_fname = '/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf'
