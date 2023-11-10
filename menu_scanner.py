@@ -132,7 +132,7 @@ class MyImageWidget(Widgets.QLabel):
         self.boxes = {box: False for box in boxes}
         self.ratio = 1
         self.application = application
-        self.temp_highlighted = None
+        self.temp_highlighted = []
 
     def set_menu_item_edit(self, menu_item_edit):
         self.menu_item_edit = menu_item_edit
@@ -156,21 +156,20 @@ class MyImageWidget(Widgets.QLabel):
             painter.drawRect(*rect)
 
     def mousePressEvent(self, event):
-        if self.temp_higlighted is not None:
-            self.boxes[temp_highlighted] = False
-
         x = event.localPos().x()
         y = event.localPos().y()
         height_adjust = math.floor((self.height() - self.pixmap_height)/2)
         for box in self.boxes:
             if box[0] <= x/self.ratio <= box[0] + box[2] and box[1] <= y/self.ratio <= box[1] + box[3]:
-                if not self.boxes[box]:
-                    self.temp_highlighted = box
                 self.boxes[box] = True
                 if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier:
                     self.menu_item_edit.setText(box[4])
+                    for old_box in self.temp_highlighted:
+                        self.boxes[old_box] = False
+                    self.temp_highlighted = [box]
                 else:
                     self.menu_item_edit.setText(self.menu_item_edit.text() + " " + box[4])
+                    self.temp_highlighted.append(box)
 
         self.repaint()
 
@@ -334,10 +333,10 @@ class MyWindow(Widgets.QMainWindow):
         # let these be added or removed later
         self.page_back_button = Widgets.QPushButton("<")
         self.page_back_button.clicked.connect(self.previous_menu)
-        self.page_forward_button = Widgets.QPushButton("<")
+        self.page_forward_button = Widgets.QPushButton(">")
         self.page_forward_button.clicked.connect(self.next_menu)
 
-        self.image_widget = None
+        self.curr_image_widget = None
         self.image_widgets = None
 
         right_column = Widgets.QVBoxLayout()
@@ -478,17 +477,16 @@ class MyWindow(Widgets.QMainWindow):
         self.curr_menu_page = 0
         self.temp_image_files = []
         self.image_widgets = []
-        self.curr_image_widget = None
         self.pixmaps = []
         self.base_heights = []
         self.base_widths = []
         self.setup_new_menu(0)
         if len(self.image_widgets) > 1 or len(self.image_widgets[0]) > 1:
-            self.load_menus_widget.addWidget(self.page_back_button)
-            self.load_menus_widget.addWidget(self.page_forward_button)
+            self.load_menus_layout.addWidget(self.page_back_button)
+            self.load_menus_layout.addWidget(self.page_forward_button)
         else:
-            self.load_menus_widget.removeWidget(self.page_back_button)
-            self.load_menus_widget.removeWidget(self.page_forward_button)
+            self.load_menus_layout.removeWidget(self.page_back_button)
+            self.load_menus_layout.removeWidget(self.page_forward_button)
 
     def setup_new_menu(self, idx):
         assert idx == len(self.image_widgets)
@@ -517,18 +515,19 @@ class MyWindow(Widgets.QMainWindow):
 
             pixmap = Gui.QPixmap(image_fname)
             self.pixmaps[-1].append(pixmap)
-            self.base_heights[-1].append(self.pixmap.height())
-            self.base_widths[-1].append(self.pixmap.width())
+            self.base_heights[-1].append(self.pixmaps[-1][-1].height())
+            self.base_widths[-1].append(self.pixmaps[-1][-1].width())
             image_widget = MyImageWidget(self.application, boxes)
             image_widget.setMinimumWidth(100)
             image_widget.setMinimumHeight(100)
-            image_widget.setPixmap(pixmap)
+            image_widget.setPixmap(self.pixmaps[-1][-1])
             image_widget.installEventFilter(self)
             image_widget.set_menu_item_edit(self.menu_item_edit)
             self.image_widgets[-1].append(image_widget)
 
         self.load_menus_button.setPalette(self.application.palette())
         self.swap_to_image(idx, 0)
+        print(self.image_widgets)
 
     def swap_to_image(self, image_idx, page):
         # the second parameter means this widget will stretch at rate 1
@@ -539,13 +538,18 @@ class MyWindow(Widgets.QMainWindow):
         self.left_column.removeWidget(self.curr_image_widget)
         self.curr_menu_idx = image_idx
         self.curr_menu_page = page
+        print('idx page', self.curr_menu_idx, self.curr_menu_page)
         self.curr_image_widget = self.image_widgets[self.curr_menu_idx][self.curr_menu_page]
         self.left_column.addWidget(self.curr_image_widget)
+        self.eventFilter(self.curr_image_widget, Gui.QResizeEvent(Core.QSize(), Core.QSize()))
 
     def previous_menu(self):
+        print("moving to prev")
         if self.curr_menu_page > 0:
+            print("moving to prev page")
             self.swap_to_image(self.curr_menu_idx, self.curr_menu_page - 1)
         elif self.curr_menu_idx > 0:
+            print("moving to prev menu")
             self.swap_to_image(self.curr_menu_idx - 1, len(self.image_widgets[self.curr_menu_idx - 1]) - 1)
 
     def next_menu(self):
@@ -558,14 +562,17 @@ class MyWindow(Widgets.QMainWindow):
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
-        if (source is self.curr_image_widget and event.type() == Core.QEvent.Resize and self.image_widget is not None):
+        if (source is self.curr_image_widget and event.type() == Core.QEvent.Resize and self.curr_image_widget is not None):
             # re-scale the pixmap when the label resizes
-            ratio = min(self.image_widget.width()/self.base_width, self.image_widget.height()/self.base_height)
-            self.image_widget.ratio = ratio
-            self.image_widget.setPixmap(
-                self.pixmap.scaled(math.floor(self.base_width*ratio), math.floor(self.base_height*ratio), transformMode=Core.Qt.SmoothTransformation)
+            ratio = min(self.curr_image_widget.width()/self.base_widths[self.curr_menu_idx][self.curr_menu_page], self.curr_image_widget.height()/self.base_heights[self.curr_menu_idx][self.curr_menu_page])
+            self.curr_image_widget.ratio = ratio
+            self.curr_image_widget.setPixmap(
+                self.pixmaps[self.curr_menu_idx][self.curr_menu_page].scaled(
+                    math.floor(self.base_widths[self.curr_menu_idx][self.curr_menu_page]*ratio), math.floor(self.base_heights[self.curr_menu_idx][self.curr_menu_page]*ratio), transformMode=Core.Qt.SmoothTransformation
+                )
             )
-        return super().eventFilter(source, event)
+        if event.type != Core.QEvent.Resize or event.size().isValid():
+            return super().eventFilter(source, event)
 
     def keyPressEvent(self, event):
         # add to table
@@ -578,7 +585,7 @@ class MyWindow(Widgets.QMainWindow):
                     button.setPalette(palette)
                 return
 
-            if self.image_widget is None:
+            if self.curr_image_widget is None:
                 palette = self.load_menus_button.palette()
                 palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
                 self.load_menus_button.setPalette(palette)
@@ -629,7 +636,7 @@ class MyWindow(Widgets.QMainWindow):
             self.menu_item_edit.clear()
             self.plant_based_buttons.button(2).click()
             self.veg_buttons.button(2).click()
-            self.image_widget.temp_highlighted = None
+            self.curr_image_widget.temp_highlighted = []
             
         # switch plant based status
         if event.type() == Core.QEvent.KeyPress and \
