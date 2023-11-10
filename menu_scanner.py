@@ -61,14 +61,15 @@ if hasattr(sys, '_MEIPASS'):
 
 #doc = fitz.open(r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023.pdf")
 
-def create_image_from_pdf(pdf_fname):
+def create_images_from_pdf(pdf_fname):
     doc = fitz.open(pdf_fname)
-    image_file = tempfile.NamedTemporaryFile(suffix='.png')
-    image_fname = image_file.name
-    doc[0].\
-        get_pixmap(matrix=fitz.Matrix(8,8)).\
-        save(image_fname) #r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023_pymupdf.png")
-    return image_file
+    image_files = []
+    for page in doc:
+        image_file = tempfile.NamedTemporaryFile(suffix='.png')
+        image_fname = image_file.name
+        page.get_pixmap(matrix=fitz.Matrix(8,8)).save(image_fname) #r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023_pymupdf.png")
+        image_files.append(image_file)
+    return image_files
 
 def ocr(image_fname):
     pix_width = Gui.QPixmap(image_fname).width()
@@ -131,6 +132,7 @@ class MyImageWidget(Widgets.QLabel):
         self.boxes = {box: False for box in boxes}
         self.ratio = 1
         self.application = application
+        self.temp_highlighted = None
 
     def set_menu_item_edit(self, menu_item_edit):
         self.menu_item_edit = menu_item_edit
@@ -154,18 +156,23 @@ class MyImageWidget(Widgets.QLabel):
             painter.drawRect(*rect)
 
     def mousePressEvent(self, event):
+        if self.temp_higlighted is not None:
+            self.boxes[temp_highlighted] = False
+
         x = event.localPos().x()
         y = event.localPos().y()
         height_adjust = math.floor((self.height() - self.pixmap_height)/2)
         for box in self.boxes:
             if box[0] <= x/self.ratio <= box[0] + box[2] and box[1] <= y/self.ratio <= box[1] + box[3]:
+                if not self.boxes[box]:
+                    self.temp_highlighted = box
                 self.boxes[box] = True
                 if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier:
                     self.menu_item_edit.setText(box[4])
                 else:
                     self.menu_item_edit.setText(self.menu_item_edit.text() + " " + box[4])
 
-                self.repaint()
+        self.repaint()
 
 # Model view tutorial I've used
 # https://doc.qt.io/qt-6/modelview.html#2-5-the-minimal-editing-example
@@ -195,13 +202,15 @@ class PolarsTableModel(Core.QAbstractTableModel):
         if role == Core.Qt.DisplayRole and orientation == Core.Qt.Horizontal and section < self.df.shape[1]:
             section = (section + 2) % self.df.shape[1]
             return Core.QVariant(self.df.columns[section])
+        if role == Core.Qt.DisplayRole and orientation == Core.Qt.Vertical and section < self.df.shape[0]:
+            return Core.QVariant(section+1)
         return Core.QVariant()
 
     def data(self, index, role):
         if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1]:
             return Core.QVariant()
 
-        if role == Core.Qt.DisplayRole:
+        if role in (Core.Qt.DisplayRole, Core.Qt.EditRole):
             return Core.QVariant(self.df[index.row(), (index.column() + 2) % self.df.shape[1]])
 
         if role == Core.Qt.BackgroundRole and self.highlight_first and index.row() == 0:
@@ -223,6 +232,17 @@ class PolarsTableModel(Core.QAbstractTableModel):
         self.reorganize()
         
         return True
+
+    def deleteRows(self, rows):
+        if not rows:
+            return
+        rows = [row.row() for row in rows]
+        print(rows)
+        self.beginRemoveRows(Core.QModelIndex(), min(rows), max(rows))
+        self.df = self.df.with_row_count('row_nr').filter(~pl.col('row_nr').is_in(rows)).drop('row_nr')
+        self.endRemoveRows()
+        self.save()
+        self.reorganize()
 
     def flags(self, index):
         return Core.Qt.ItemIsSelectable | Core.Qt.ItemIsEditable | Core.Qt.ItemIsEnabled
@@ -288,7 +308,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
         self.dataChanged.emit(self.createIndex(0,0), self.createIndex(*self.df.shape), [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
 class MyWindow(Widgets.QMainWindow):
-    def __init__(self, app, df_schema, path, boxes):
+    def __init__(self, app, df_schema):
         super().__init__()
 
         self.setWindowState(Core.Qt.WindowMaximized)
@@ -300,18 +320,25 @@ class MyWindow(Widgets.QMainWindow):
         self.setCentralWidget(central_widget)
         central_layout = Widgets.QHBoxLayout(central_widget)
 
-        self.pixmap = Gui.QPixmap(path)
-        self.base_height = self.pixmap.height()
-        self.base_width = self.pixmap.width()
-        self.image_widget = MyImageWidget(app, boxes)
-        self.image_widget.setMinimumWidth(100)
-        self.image_widget.setMinimumHeight(100)
-        self.image_widget.setPixmap(self.pixmap)
-        self.image_widget.installEventFilter(self)
-        # the second parameter means this widget will stretch at rate 1
-        # since nothing else is given a stretch parameter, this means this widget
-        # is the only widget that will stretch when the window resizes
-        central_layout.addWidget(self.image_widget, 1)
+        self.left_column = Widgets.QVBoxLayout()
+        central_layout.addLayout(self.left_column)
+
+        self.load_menus_layout = Widgets.QHBoxLayout()
+        self.left_column.addLayout(self.load_menus_layout)
+
+        self.load_menus_button = Widgets.QPushButton("Load menu(s)")
+        self.load_menus_button.clicked.connect(self.load_menus)
+        self.load_menus_layout.addWidget(self.load_menus_button)
+        self.load_menus_layout.addStretch()
+    
+        # let these be added or removed later
+        self.page_back_button = Widgets.QPushButton("<")
+        self.page_back_button.clicked.connect(self.previous_menu)
+        self.page_forward_button = Widgets.QPushButton("<")
+        self.page_forward_button.clicked.connect(self.next_menu)
+
+        self.image_widget = None
+        self.image_widgets = None
 
         right_column = Widgets.QVBoxLayout()
         central_layout.addLayout(right_column)
@@ -359,7 +386,6 @@ class MyWindow(Widgets.QMainWindow):
         self.menu_item_edit = Widgets.QLineEdit()
         self.menu_item_edit.setMinimumWidth(400)
         menu_item_layout.addWidget(self.menu_item_edit)
-        self.image_widget.set_menu_item_edit(self.menu_item_edit)
 
         self.plant_based_buttons = Widgets.QButtonGroup()
         self.plant_based_buttons.buttonClicked.connect(self.plant_based_changed)
@@ -441,16 +467,104 @@ class MyWindow(Widgets.QMainWindow):
             self.table_view.horizontalHeader().resizeSections(Widgets.QHeaderView.ResizeToContents)
             self.table_view.horizontalHeader().setSectionResizeMode(col, Widgets.QHeaderView.Interactive)
 
+    def load_menus(self):
+        dialog = Widgets.QFileDialog(self)
+        dialog.setFileMode(Widgets.QFileDialog.ExistingFiles)
+        if not dialog.exec():
+            return
+
+        self.menu_file_names = dialog.selectedFiles()
+        self.curr_menu_idx = 0
+        self.curr_menu_page = 0
+        self.temp_image_files = []
+        self.image_widgets = []
+        self.curr_image_widget = None
+        self.pixmaps = []
+        self.base_heights = []
+        self.base_widths = []
+        self.setup_new_menu(0)
+        if len(self.image_widgets) > 1 or len(self.image_widgets[0]) > 1:
+            self.load_menus_widget.addWidget(self.page_back_button)
+            self.load_menus_widget.addWidget(self.page_forward_button)
+        else:
+            self.load_menus_widget.removeWidget(self.page_back_button)
+            self.load_menus_widget.removeWidget(self.page_forward_button)
+
+    def setup_new_menu(self, idx):
+        assert idx == len(self.image_widgets)
+        fname = self.menu_file_names[idx]
+        if fname.endswith('.pdf'):
+            image_files = create_images_from_pdf(fname)
+            self.temp_image_files.extend(image_files)
+            image_fnames = [file.name for file in image_files]
+        else:
+            image_fnames = [fname]
+
+        self.image_widgets.append([])
+        self.pixmaps.append([])
+        self.base_heights.append([])
+        self.base_widths.append([])
+        for image_fname in image_fnames:
+            text_dict = ocr(image_fname)
+            boxes = [
+                (line_block["x"], line_block["y"], line_block["w"], line_block["h"], line_block["text"])
+                for p in text_dict.values()
+                for b in p.values()
+                for par in b.values()
+                for l in par.values()
+                for line_block in l
+            ]
+
+            pixmap = Gui.QPixmap(image_fname)
+            self.pixmaps[-1].append(pixmap)
+            self.base_heights[-1].append(self.pixmap.height())
+            self.base_widths[-1].append(self.pixmap.width())
+            image_widget = MyImageWidget(self.application, boxes)
+            image_widget.setMinimumWidth(100)
+            image_widget.setMinimumHeight(100)
+            image_widget.setPixmap(pixmap)
+            image_widget.installEventFilter(self)
+            image_widget.set_menu_item_edit(self.menu_item_edit)
+            self.image_widgets[-1].append(image_widget)
+
+        self.load_menus_button.setPalette(self.application.palette())
+        self.swap_to_image(idx, 0)
+
+    def swap_to_image(self, image_idx, page):
+        # the second parameter means this widget will stretch at rate 1
+        # since nothing else is given a stretch parameter, this means this widget
+        # is the only widget that will stretch when the window resizes
+
+        #central_layout.addWidget(self.image_widget, 1)
+        self.left_column.removeWidget(self.curr_image_widget)
+        self.curr_menu_idx = image_idx
+        self.curr_menu_page = page
+        self.curr_image_widget = self.image_widgets[self.curr_menu_idx][self.curr_menu_page]
+        self.left_column.addWidget(self.curr_image_widget)
+
+    def previous_menu(self):
+        if self.curr_menu_page > 0:
+            self.swap_to_image(self.curr_menu_idx, self.curr_menu_page - 1)
+        elif self.curr_menu_idx > 0:
+            self.swap_to_image(self.curr_menu_idx - 1, len(self.image_widgets[self.curr_menu_idx - 1]) - 1)
+
+    def next_menu(self):
+        if self.curr_menu_page < len(self.image_widgets[self.curr_menu_idx]) - 1:
+            self.swap_to_image(self.curr_menu_idx, self.curr_menu_page + 1)
+        elif self.curr_menu_idx < len(self.image_widgets) - 1:
+            self.swap_to_image(self.curr_menu_idx + 1, 0)
+        elif len(self.image_widgets) < len(self.menu_file_names):
+            self.setup_new_menu(len(self.image_widgets))
+
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
-        if (source is self.image_widget and event.type() == Core.QEvent.Resize):
+        if (source is self.curr_image_widget and event.type() == Core.QEvent.Resize and self.image_widget is not None):
             # re-scale the pixmap when the label resizes
             ratio = min(self.image_widget.width()/self.base_width, self.image_widget.height()/self.base_height)
             self.image_widget.ratio = ratio
             self.image_widget.setPixmap(
                 self.pixmap.scaled(math.floor(self.base_width*ratio), math.floor(self.base_height*ratio), transformMode=Core.Qt.SmoothTransformation)
             )
-            #, menu_item_edit                Core.Qt.SmoothTransformation))
         return super().eventFilter(source, event)
 
     def keyPressEvent(self, event):
@@ -462,6 +576,12 @@ class MyWindow(Widgets.QMainWindow):
                     palette = button.palette()
                     palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
                     button.setPalette(palette)
+                return
+
+            if self.image_widget is None:
+                palette = self.load_menus_button.palette()
+                palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
+                self.load_menus_button.setPalette(palette)
                 return
             
             missing_school_deets = False
@@ -509,6 +629,7 @@ class MyWindow(Widgets.QMainWindow):
             self.menu_item_edit.clear()
             self.plant_based_buttons.button(2).click()
             self.veg_buttons.button(2).click()
+            self.image_widget.temp_highlighted = None
             
         # switch plant based status
         if event.type() == Core.QEvent.KeyPress and \
@@ -521,6 +642,12 @@ class MyWindow(Widgets.QMainWindow):
            event.key() == Core.Qt.Key_V and \
            self.application.keyboardModifiers() & Core.Qt.ControlModifier:
             self.veg_buttons.button(max((self.veg_buttons.checkedId() + 1) % 3, self.plant_based_buttons.checkedId())).click()
+
+        if event.type() == Core.QEvent.KeyPress and \
+           event.key() in (Core.Qt.Key_Backspace, Core.Qt.Key_Delete):
+            for idx in self.table_view.selectedIndexes():
+                self.table_model.setData(idx, '', Core.Qt.EditRole)
+            self.table_model.deleteRows(self.table_view.selectionModel().selectedRows())
 
     def plant_based_changed(self):
         if self.plant_based_buttons.checkedId() == 0:
@@ -544,23 +671,12 @@ df_schema={
     'vegetarian': str
 }
 
-pdf_fname = '/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf'
-image_file = create_image_from_pdf(pdf_fname)
-image_fname = image_file.name
-text_dict = ocr(image_fname)
-
 window = MyWindow(
     app,
     df_schema,
-    image_fname,
-    [(line_block["x"], line_block["y"], line_block["w"], line_block["h"], line_block["text"])
-        for p in text_dict.values()
-        for b in p.values()
-        for par in b.values()
-        for l in par.values()
-        for line_block in l]
 )
 
 window.show()
 app.exec()
 
+#pdf_fname = '/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf'
