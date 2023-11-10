@@ -164,14 +164,18 @@ class MyImageWidget(Widgets.QLabel):
                 self.boxes[box] = True
                 if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier:
                     self.menu_item_edit.setText(box[4])
-                    for old_box in self.temp_highlighted:
-                        self.boxes[old_box] = False
+                    self.unhighlight()
                     self.temp_highlighted = [box]
                 else:
                     self.menu_item_edit.setText(self.menu_item_edit.text() + " " + box[4])
                     self.temp_highlighted.append(box)
 
         self.repaint()
+
+    def unhighlight(self):
+        for old_box in self.temp_highlighted:
+            self.boxes[old_box] = False
+        self.temp_highlighted = []
 
 # Model view tutorial I've used
 # https://doc.qt.io/qt-6/modelview.html#2-5-the-minimal-editing-example
@@ -236,7 +240,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
         if not rows:
             return
         rows = [row.row() for row in rows]
-        print(rows)
         self.beginRemoveRows(Core.QModelIndex(), min(rows), max(rows))
         self.df = self.df.with_row_count('row_nr').filter(~pl.col('row_nr').is_in(rows)).drop('row_nr')
         self.endRemoveRows()
@@ -329,12 +332,16 @@ class MyWindow(Widgets.QMainWindow):
         self.load_menus_button.clicked.connect(self.load_menus)
         self.load_menus_layout.addWidget(self.load_menus_button)
         self.load_menus_layout.addStretch()
-    
-        # let these be added or removed later
+   
+        # these will be unhidden later
         self.page_back_button = Widgets.QPushButton("<")
         self.page_back_button.clicked.connect(self.previous_menu)
+        self.page_back_button.setVisible(False)
+        self.load_menus_layout.addWidget(self.page_back_button)
         self.page_forward_button = Widgets.QPushButton(">")
         self.page_forward_button.clicked.connect(self.next_menu)
+        self.page_forward_button.setVisible(False)
+        self.load_menus_layout.addWidget(self.page_forward_button)
 
         self.curr_image_widget = None
         self.image_widgets = None
@@ -481,12 +488,12 @@ class MyWindow(Widgets.QMainWindow):
         self.base_heights = []
         self.base_widths = []
         self.setup_new_menu(0)
-        if len(self.image_widgets) > 1 or len(self.image_widgets[0]) > 1:
-            self.load_menus_layout.addWidget(self.page_back_button)
-            self.load_menus_layout.addWidget(self.page_forward_button)
+        if len(self.menu_file_names) > 1 or len(self.image_widgets[0]) > 1:
+            self.page_back_button.setVisible(True)
+            self.page_forward_button.setVisible(True)
         else:
-            self.load_menus_layout.removeWidget(self.page_back_button)
-            self.load_menus_layout.removeWidget(self.page_forward_button)
+            self.page_back_button.setVisible(False)
+            self.page_forward_button.setVisible(False)
 
     def setup_new_menu(self, idx):
         assert idx == len(self.image_widgets)
@@ -523,33 +530,31 @@ class MyWindow(Widgets.QMainWindow):
             image_widget.setPixmap(self.pixmaps[-1][-1])
             image_widget.installEventFilter(self)
             image_widget.set_menu_item_edit(self.menu_item_edit)
+            image_widget.setVisible(False) # will show later
             self.image_widgets[-1].append(image_widget)
+
+            # the second parameter means this widget will stretch at rate 1
+            # since nothing else is given a stretch parameter, this means this widget
+            # is the only widget that will stretch when the window resizes
+            self.left_column.addWidget(image_widget, 1)
 
         self.load_menus_button.setPalette(self.application.palette())
         self.swap_to_image(idx, 0)
-        print(self.image_widgets)
 
     def swap_to_image(self, image_idx, page):
-        # the second parameter means this widget will stretch at rate 1
-        # since nothing else is given a stretch parameter, this means this widget
-        # is the only widget that will stretch when the window resizes
-
-        #central_layout.addWidget(self.image_widget, 1)
-        self.left_column.removeWidget(self.curr_image_widget)
+        if self.curr_image_widget is not None:
+            self.curr_image_widget.setVisible(False)
+            self.curr_image_widget.unhighlight()
         self.curr_menu_idx = image_idx
         self.curr_menu_page = page
-        print('idx page', self.curr_menu_idx, self.curr_menu_page)
         self.curr_image_widget = self.image_widgets[self.curr_menu_idx][self.curr_menu_page]
-        self.left_column.addWidget(self.curr_image_widget)
+        self.curr_image_widget.setVisible(True)
         self.eventFilter(self.curr_image_widget, Gui.QResizeEvent(Core.QSize(), Core.QSize()))
 
     def previous_menu(self):
-        print("moving to prev")
         if self.curr_menu_page > 0:
-            print("moving to prev page")
             self.swap_to_image(self.curr_menu_idx, self.curr_menu_page - 1)
         elif self.curr_menu_idx > 0:
-            print("moving to prev menu")
             self.swap_to_image(self.curr_menu_idx - 1, len(self.image_widgets[self.curr_menu_idx - 1]) - 1)
 
     def next_menu(self):
