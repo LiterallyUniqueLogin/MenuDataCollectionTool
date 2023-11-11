@@ -1,16 +1,24 @@
 school_district,district_type,menu_item,count,plant_based,vegetarian
 "",Elementary,"",,"",""
-Banta,Elementary,Chicken and Waffles,1,N,N
-RUSD,High,Bosco Cheese Sticks with Beef Meat Sauce,1,N,N
-RUSD,High,"Chicken Strips with Texas Toast, Baked Fries, Spicy Ranch",1,N,N
-banta,Elementary,BBQ Chicken Pizza,2,N,N
-banta,Elementary,Breadstick,1,N,N
-banta,Elementary,Chicken Nuggets with Nacho Chips,5,N,N
-banta,Elementary,Spaghetti with Meat sauce with a Garlic Breadstick,7,N,N
+Banta,Elementary,"",,"",N
+Banta,Elementary,Yogurt Parfait with Granola,1,N,N
+Banta,Elementery,Yogurt Parfait with Granola,1,N,N
+RUSD,High,"",,"",N
+RUSD,High,"",,"",N
+bafna,foo,Cinnamon Rolls,3,N,N
+banta,Elementary,"",,"",N
+banta,Elementary,"",,"",N
+banta,Elementary,"",,"",N
+banta,Elementary,"",,"",N
+banta,Elementary,Bagel with Cream Cheese,24,N,N
+banta,Elementary,Cinnamon Rolls,4,N,N
 banta,Elementary,Taco with Salsa,1,N,N
+banta,Elementary,asdf,6,N,N
 banta,High,"",,"",N
 banta,High,Bery Juice,1,N,N
-banta,High,Orange Ice Bat Chillin,1,N,N
+banta,High,Orange Ice Bat Chillin,1,N,a
+banta,elementary,Teriyaki Chicken over Rice,19,N,N
+banta,foo,Bagel with Cream Cheese,1,N,N
 koobah,Elementary,"",,N,N
 other,Elementary,Chicken Sandwich,1,"",N
 other,Elementary,Fruit Punch Juice,1,N,N
