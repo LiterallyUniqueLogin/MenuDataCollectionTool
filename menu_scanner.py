@@ -148,6 +148,10 @@ class MyImageWidget(Widgets.QLabel):
         height_adjust = math.floor((self.height() - self.pixmap_height)/2)
         for box, clicked in self.boxes.items():
             rect = [math.floor(self.ratio*val) for val in box[:4]]
+            rect[0] -= 1
+            rect[1] -= 2
+            rect[2] += 2
+            rect[3] += 4
             rect[1] = rect[1] + height_adjust
             if not clicked:
                 painter.setPen(Gui.QPen(Core.Qt.red, 2))
@@ -157,11 +161,9 @@ class MyImageWidget(Widgets.QLabel):
 
     def mousePressEvent(self, event):
         x = event.localPos().x()
-        y = event.localPos().y()
-        height_adjust = math.floor((self.height() - self.pixmap_height)/2)
+        y = event.localPos().y() - max(math.floor((self.height() - self.pixmap_height)/2), 0)
         for box in self.boxes:
             if box[0] <= x/self.ratio <= box[0] + box[2] and box[1] <= y/self.ratio <= box[1] + box[3]:
-                self.boxes[box] = True
                 if not self.application.keyboardModifiers() & Core.Qt.ShiftModifier:
                     self.menu_item_edit.setText(box[4])
                     self.unhighlight()
@@ -169,6 +171,7 @@ class MyImageWidget(Widgets.QLabel):
                 else:
                     self.menu_item_edit.setText(self.menu_item_edit.text() + " " + box[4])
                     self.temp_highlighted.append(box)
+                self.boxes[box] = True
 
         self.repaint()
 
@@ -358,6 +361,7 @@ class MyWindow(Widgets.QMainWindow):
         self.load_existing_table_button = Widgets.QPushButton("Load existing table")
         self.load_existing_table_button.clicked.connect(self.load_existing_table)
         load_layout.addWidget(self.load_existing_table_button)
+        load_layout.addStretch()
 
         school_name_row = Widgets.QHBoxLayout()
         right_column.addLayout(school_name_row)
@@ -415,14 +419,32 @@ class MyWindow(Widgets.QMainWindow):
             veg_layout.addWidget(button)
             self.veg_buttons.addButton(button, id_)
 
-        item_layout.addWidget(Widgets.QLabel("Count:"))
+        data_layout = Widgets.QVBoxLayout()
+        item_layout.addLayout(data_layout)
+        count_layout = Widgets.QHBoxLayout()
+
+        data_layout.addWidget(Widgets.QLabel("Data input mode:"))
+        self.data_mode_buttons = Widgets.QButtonGroup()
+        data_mode_layout = Widgets.QHBoxLayout()
+        data_layout.addLayout(data_mode_layout)
+        for id_, text in enumerate(("Count", "Date")):
+            button = Widgets.QRadioButton(text)
+            data_mode_layout.addWidget(button)
+            self.data_mode_buttons.addButton(button, id_)
+        self.data_mode_buttons.button(0).click()
+
+        self.count_label = Widgets.QLabel("Count:")
+        count_layout.addWidget(self.count_label)
         self.item_count = Widgets.QLineEdit()
         self.item_count.setInputMask("00")
         self.item_count.setText("1")
         self.item_count.setMaximumWidth(50)
-        item_layout.addWidget(self.item_count)
+        count_layout.addWidget(self.item_count)
         self.item_count_sticky = Widgets.QCheckBox("sticky")
-        item_layout.addWidget(self.item_count_sticky)
+        count_layout.addWidget(self.item_count_sticky)
+        data_layout.addLayout(count_layout)
+        data_layout.addStretch()
+        self.data_mode_buttons.buttonClicked.connect(lambda _ : self.change_count_layout_visibility())
        
         self.table_model = None
         self.table_view = Widgets.QTableView()
@@ -433,8 +455,12 @@ class MyWindow(Widgets.QMainWindow):
         self.manual_resize_district_type = False
         self.table_view.horizontalHeader().sectionResized.connect(self.catch_manual_resize)
 
-        self.school_name_edit.textEdited.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()))
-        self.school_type_select.currentTextChanged.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()))
+        self.school_name_edit.textEdited.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()) if self.table_model else None)
+        self.school_type_select.currentTextChanged.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()) if self.table_model else None)
+
+    def change_count_layout_visibility(self):
+        for widget in self.count_label, self. item_count, self.item_count_sticky:
+            widget.setVisible(self.data_mode_buttons.checkedId() == 0)
 
     def catch_manual_resize(self, index, oldSize, newSize):
         if index == 0:
@@ -476,6 +502,8 @@ class MyWindow(Widgets.QMainWindow):
     def load_menus(self):
         dialog = Widgets.QFileDialog(self)
         dialog.setFileMode(Widgets.QFileDialog.ExistingFiles)
+        dialog.setFileMode(Widgets.QFileDialog.ExistingFiles)
+        dialog.setNameFilter("PDFs and Images (*.pdf *.png *.jpg *.jpeg *.gif *.tiff)")
         if not dialog.exec():
             return
 
@@ -545,6 +573,16 @@ class MyWindow(Widgets.QMainWindow):
         if self.curr_image_widget is not None:
             self.curr_image_widget.setVisible(False)
             self.curr_image_widget.unhighlight()
+
+        if self.curr_menu_idx != image_idx:
+            self.item_count.setText("1")
+            self.plant_based_buttons.button(2).click()
+            self.veg_buttons.button(2).click()
+            self.item_count_sticky.setChecked(False)
+            self.menu_item_edit.clear()
+            self.school_name_edit.clear()
+            self.school_type_select.clearEditText()
+            
         self.curr_menu_idx = image_idx
         self.curr_menu_page = page
         self.curr_image_widget = self.image_widgets[self.curr_menu_idx][self.curr_menu_page]
@@ -653,7 +691,13 @@ class MyWindow(Widgets.QMainWindow):
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_V and \
            self.application.keyboardModifiers() & Core.Qt.ControlModifier:
-            self.veg_buttons.button(max((self.veg_buttons.checkedId() + 1) % 3, self.plant_based_buttons.checkedId())).click()
+            self.veg_buttons.button((self.veg_buttons.checkedId() + 1) % 3).click()
+
+        # swtich data mode status
+        if event.type() == Core.QEvent.KeyPress and \
+           event.key() == Core.Qt.Key_M and \
+           self.application.keyboardModifiers() & Core.Qt.ControlModifier:
+            self.data_mode_buttons.button((self.data_mode_buttons.checkedId() + 1) % 2).click()
 
         if event.type() == Core.QEvent.KeyPress and \
            event.key() in (Core.Qt.Key_Backspace, Core.Qt.Key_Delete):
