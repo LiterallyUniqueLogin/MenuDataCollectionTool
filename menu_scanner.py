@@ -1,3 +1,8 @@
+# Undo redo needs main table not to be focused
+# TODO highlight deleted rows somehow
+# TODO test not delegating from main table
+# test consuming inputs appropriately
+# delete coming in many steps, not undo all at once
 
 # tutorials
 # https://www.pythonguis.com/tutorials/creating-your-first-pyqt-window/
@@ -185,15 +190,38 @@ class MyImageWidget(Widgets.QLabel):
 # Model view tutorials that I haven't used much:
 # https://doc.qt.io/qt-6/model-view-programming.html#model-view-classes
 
+class SetDataAction:
+    def __init__(self, table_model, index, value):
+        self.table_model = table_model
+        self.value = value
+        self.index = index
+
+    def do(self):
+        self.old_value = self.table_model.set_data_helper(self.index, self.value)
+
+    def undo(self):
+        self.table_model.set_data_helper(self.index, self.old_value)
+
+class DeleteRowsAction:
+    def __init__(self, table_model, rows):
+        self.table_model = table_model
+        self.rows = rows
+
+    def do(self):
+        self.old_row_contents = self.table_model.delete_rows_helper(self.rows)
+
+    def undo(self):
+        self.table_model.insert_rows_helper(self.rows, self.old_row_contents)
 
 class PolarsTableModel(Core.QAbstractTableModel):
-    def __init__(self, df, df_schema, out_fname):
+    def __init__(self, df, df_schema, out_fname, undo_redo):
         super().__init__()
         self.df = df
         self.df_schema = df_schema
+        self.undo_redo = undo_redo
+        self.out_fname = out_fname
 
         self.highlight_cells = []
-        self.out_fname = out_fname
         self.curr_district = None
         self.curr_district_type = None
 
@@ -228,20 +256,51 @@ class PolarsTableModel(Core.QAbstractTableModel):
             return False
         if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1]:
             return False
+
+        if value != self.df[index.row(), (index.column() + 2) % self.df.shape[1]]:
+            self.undo_redo.do(SetDataAction(self, index, value))
+        return True
+
+    def set_data_helper(self, index, value):
+        old_value = self.df[index.row(), (index.column() + 2) % self.df.shape[1]]
         self.df[index.row(), (index.column() + 2) % self.df.shape[1]] = value
 
         self.save()
         self.reorganize()
         
-        return True
+        return old_value
 
     def deleteRows(self, rows):
         if not rows:
             return
         rows = [row.row() for row in rows]
+        self.undo_redo.do(DeleteRowsAction(self, rows))
+
+    def delete_rows_helper(self, rows):
         self.beginRemoveRows(Core.QModelIndex(), min(rows), max(rows))
+        deleted_row_contents = self.df.with_row_count('row_nr').filter(pl.col('row_nr').is_in(rows))
         self.df = self.df.with_row_count('row_nr').filter(~pl.col('row_nr').is_in(rows)).drop('row_nr')
         self.endRemoveRows()
+        self.save()
+        self.reorganize()
+        return deleted_row_contents
+
+    # assumes rows are contiguous
+    def insert_rows_helper(self, rows, deleted_row_contents):
+        self.beginInsertRows(Core.QModelIndex(), min(rows), max(rows))
+        self.df = pl.concat([
+            self.df.with_row_count('row_nr').with_columns([
+                pl.when(
+                    pl.col('row_nr') < min(rows)
+                ).then(
+                    pl.col('row_nr')
+                ).otherwise(
+                    pl.col('row_nr') + len(rows)
+                )
+            ]),
+            deleted_row_contents
+        ]).sort(by=['row_nr']).drop('row_nr')
+        self.endInsertRows()
         self.save()
         self.reorganize()
 
@@ -279,6 +338,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
             ]).drop('row_nr')
             cell = self.createIndex(row_nr, 1)
             self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+            self.highlight_cells = [(row_nr, 1)]
 
         for cell in old_highlight_cells:
             self.dataChanged.emit(self.createIndex(*cell), self.createIndex(*cell), [Core.Qt.BackgroundRole])
@@ -295,7 +355,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
         old_highlight_cells = self.highlight_cells
 
         if row['count'].item() == menu_item_data[3]:
-            self.delete_rows([row['row_nr'].item()])
+            self.deleteRows([self.createIndex(row['row_nr'].item(), 0)])
             self.highlight_cells = []
         else:
             row_nr = row['row_nr'].item()
@@ -310,6 +370,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
             ]).drop('row_nr')
             cell = self.createIndex(row_nr, 1)
             self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+            self.highlight_cells = [(row_nr, 1)]
 
         for cell in old_highlight_cells:
             self.dataChanged.emit(self.createIndex(*cell), self.createIndex(*cell), [Core.Qt.BackgroundRole])
@@ -356,6 +417,10 @@ class UndoRedo:
             action.do()
             self.undo_stack.append(action)
 
+    def clear(self):
+        self.undo_stack = []
+        self.redo_stack = []
+
 class InsertNewMenuItemAction:
     def __init__(self, table_model, menu_item_data, menu_item_edit, palette):
         self.table_model = table_model
@@ -370,6 +435,26 @@ class InsertNewMenuItemAction:
     def undo(self):
         self.table_model.remove_menu_item_data(self.menu_item_data)
         self.menu_item_edit.setPalette(self.palette)
+
+class PreviousMenuAction:
+    def __init__(self, my_window):
+        self.window = my_window
+
+    def do(self):
+        self.window.previous_menu()
+
+    def undo(self):
+        self.window.next_menu()
+
+class NextMenuAction:
+    def __init__(self, my_window):
+        self.window = my_window
+
+    def do(self):
+        self.window.next_menu()
+
+    def undo(self):
+        self.window.previous_menu()
 
 class MyWindow(Widgets.QMainWindow):
     def __init__(self, app, df_schema):
@@ -398,11 +483,12 @@ class MyWindow(Widgets.QMainWindow):
    
         # these will be unhidden later
         self.page_back_button = Widgets.QPushButton("<")
-        self.page_back_button.clicked.connect(self.previous_menu)
+        self.page_back_button.clicked.connect(lambda _ : self.undo_redo.do(PreviousMenuAction(self)) if self.curr_menu_page > 0 or self.curr_menu_idx > 0 else None)
         self.page_back_button.setVisible(False)
         self.load_menus_layout.addWidget(self.page_back_button)
         self.page_forward_button = Widgets.QPushButton(">")
-        self.page_forward_button.clicked.connect(self.next_menu)
+        self.page_forward_button.clicked.connect(lambda _ : self.undo_redo.do(NextMenuAction(self)) if self.curr_menu_page < len(self.image_widgets[self.curr_menu_idx]) - 1 or self.curr_menu_idx < len(self.menu_file_names) else None)
+
         self.page_forward_button.setVisible(False)
         self.load_menus_layout.addWidget(self.page_forward_button)
 
@@ -512,7 +598,7 @@ class MyWindow(Widgets.QMainWindow):
        
         self.table_model = None
         self.table_view = Widgets.QTableView()
-        self.table_view.installEventFilter(self)
+        #self.table_view.installEventFilter(self)
         self.table_view.setCornerButtonEnabled(False)
         right_column.addWidget(self.table_view, 1)
         self.manual_resize_menu_item = False
@@ -541,7 +627,8 @@ class MyWindow(Widgets.QMainWindow):
             if not fname.endswith('.csv'):
                 fname += '.csv'
             df = pl.DataFrame(schema=self.df_schema)
-            self.table_model = PolarsTableModel(df, df_schema, fname)
+            self.table_model = PolarsTableModel(df, df_schema, fname, self.undo_redo)
+            self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip())
             self.table_view.setModel(self.table_model)
             self.set_table_view_sizing()
         for button in self.choose_new_table_button, self.load_existing_table_button:
@@ -553,7 +640,8 @@ class MyWindow(Widgets.QMainWindow):
             df = pl.read_csv(fname)
             # TODO don't crash if not true
             assert list(df.columns) == list(self.df_schema.keys())
-            self.table_model = PolarsTableModel(df, self.df_schema, fname)
+            self.table_model = PolarsTableModel(df, self.df_schema, fname, self.undo_redo)
+            self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip())
             self.table_view.setModel(self.table_model)
             self.set_table_view_sizing()
         for button in self.choose_new_table_button, self.load_existing_table_button:
@@ -581,6 +669,8 @@ class MyWindow(Widgets.QMainWindow):
         self.base_heights = []
         self.base_widths = []
         self.setup_new_menu(0)
+        self.undo_redo.clear()
+        self.reset_widgets_new_menu()
         if len(self.menu_file_names) > 1 or len(self.image_widgets[0]) > 1:
             self.page_back_button.setVisible(True)
             self.page_forward_button.setVisible(True)
@@ -634,20 +724,23 @@ class MyWindow(Widgets.QMainWindow):
         self.load_menus_button.setPalette(self.application.palette())
         self.swap_to_image(idx, 0)
 
+    def reset_widgets_new_menu(self):
+        self.item_count.setText("1")
+        self.plant_based_buttons.button(2).click()
+        self.veg_buttons.button(2).click()
+        self.item_count_sticky.setChecked(False)
+        self.menu_item_edit.clear()
+        self.school_name_edit.clear()
+        self.school_type_select.clearEditText()
+
     def swap_to_image(self, image_idx, page):
         if self.curr_image_widget is not None:
             self.curr_image_widget.setVisible(False)
             self.curr_image_widget.unhighlight()
 
         if self.curr_menu_idx != image_idx:
-            self.item_count.setText("1")
-            self.plant_based_buttons.button(2).click()
-            self.veg_buttons.button(2).click()
-            self.item_count_sticky.setChecked(False)
-            self.menu_item_edit.clear()
-            self.school_name_edit.clear()
-            self.school_type_select.clearEditText()
-            
+            self.reset_widgets_new_menu()
+                        
         self.curr_menu_idx = image_idx
         self.curr_menu_page = page
         self.curr_image_widget = self.image_widgets[self.curr_menu_idx][self.curr_menu_page]
@@ -681,12 +774,11 @@ class MyWindow(Widgets.QMainWindow):
             )
         if event.type() == Core.QEvent.KeyPress:
             self.keyPressEvent(event)
+        else:
+            self.key_press_consumed = False
 
         out = super().eventFilter(source, event)
-        if event.type() == Core.QEvent.KeyPress and event.key() == Core.Qt.Key_Return:
-            return True
-        else:
-            return out
+        return self.key_press_consumed or out
 
     def keyPressEvent(self, event):
         # add to table
@@ -697,12 +789,14 @@ class MyWindow(Widgets.QMainWindow):
                     palette = button.palette()
                     palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
                     button.setPalette(palette)
-                return
+                self.key_press_consumed = True
+                return 
 
             if self.curr_image_widget is None:
                 palette = self.load_menus_button.palette()
                 palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
                 self.load_menus_button.setPalette(palette)
+                self.key_press_consumed = True
                 return
             
             missing_school_deets = False
@@ -723,12 +817,14 @@ class MyWindow(Widgets.QMainWindow):
                 self.school_type_select.setPalette(self.application.palette())
 
             if missing_school_deets:
+                self.key_press_consumed = True
                 return
 
             if self.menu_item_edit.text().strip() == '':
                 palette = self.menu_item_edit.palette()
                 palette.setColor(palette.Base, Gui.QColor(Gui.QColorConstants.Svg.lightcoral))
                 self.menu_item_edit.setPalette(palette)
+                self.key_press_consumed = True
                 return
 
             menu_item_data = [
@@ -750,24 +846,32 @@ class MyWindow(Widgets.QMainWindow):
             self.plant_based_buttons.button(2).click()
             self.veg_buttons.button(2).click()
             self.curr_image_widget.temp_highlighted = []
+            self.key_press_consumed = True
+            return
             
         # switch plant based status
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_P and \
            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier:
             self.plant_based_buttons.button((self.plant_based_buttons.checkedId() + 1) % 3).click()
+            self.key_press_consumed = True
+            return
 
         # switch plant based status
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_V and \
            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier:
             self.veg_buttons.button((self.veg_buttons.checkedId() + 1) % 3).click()
+            self.key_press_consumed = True
+            return
 
         # swtich data mode status
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_M and \
            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier:
             self.data_mode_buttons.button((self.data_mode_buttons.checkedId() + 1) % 2).click()
+            self.key_press_consumed = True
+            return
 
         # delete selected table contents
         if event.type() == Core.QEvent.KeyPress and \
@@ -775,6 +879,8 @@ class MyWindow(Widgets.QMainWindow):
             for idx in self.table_view.selectedIndexes():
                 self.table_model.setData(idx, '', Core.Qt.EditRole)
             self.table_model.deleteRows(self.table_view.selectionModel().selectedRows())
+            self.key_press_consumed = False
+            return
 
         # undo
         if event.type() == Core.QEvent.KeyPress and \
@@ -782,6 +888,8 @@ class MyWindow(Widgets.QMainWindow):
            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier and \
            (self.application.keyboardModifiers() & Core.Qt.ShiftModifier) != Core.Qt.ShiftModifier:
             self.undo_redo.undo()
+            self.key_press_consumed = True
+            return
 
         # redo
         if event.type() == Core.QEvent.KeyPress and \
@@ -789,6 +897,10 @@ class MyWindow(Widgets.QMainWindow):
            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier and \
            (self.application.keyboardModifiers() & Core.Qt.ShiftModifier) == Core.Qt.ShiftModifier:
             self.undo_redo.redo()
+            self.key_press_consumed = True
+            return
+
+        self.key_press_consumed = False
 
     def plant_based_changed(self):
         if self.plant_based_buttons.checkedId() == 0:
