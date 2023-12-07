@@ -1,8 +1,13 @@
-# Undo redo needs main table not to be focused
-# TODO highlight deleted rows somehow
-# TODO test not delegating from main table
-# test consuming inputs appropriately
-# delete coming in many steps, not undo all at once
+# todo load school types
+# Todo calendar dates
+# todo instructional movie
+
+# Mention:
+# Undo redo/enter needs main table not to be focused
+# delete will work on main table first if focused, not the other places to type
+
+# not doing
+# highlighting deleted rows somehow
 
 # tutorials
 # https://www.pythonguis.com/tutorials/creating-your-first-pyqt-window/
@@ -194,13 +199,43 @@ class SetDataAction:
     def __init__(self, table_model, index, value):
         self.table_model = table_model
         self.value = value
-        self.index = index
+        self.col = index.column()
+        self.row_uid = self.table_model.df.with_row_count('row_nr').filter(pl.col('row_nr') == index.row()).select('uid').item()
 
     def do(self):
-        self.old_value = self.table_model.set_data_helper(self.index, self.value)
+        self.old_value = self.table_model.set_data_helper(self.row_uid, self.col, self.value)
 
     def undo(self):
-        self.table_model.set_data_helper(self.index, self.old_value)
+        self.table_model.set_data_helper(self.row_uid, self.col, self.old_value)
+
+class SetDatasAction:
+    def __init__(self, table_model, indices, values):
+        self.table_model = table_model
+        self.values = values
+        self.cols = [index.column() for index in indices]
+        self.row_uids = [
+            self.table_model.df.with_row_count('row_nr').filter(pl.col('row_nr') == index.row()).select('uid').item()
+            for index in indices
+        ]
+
+    def do(self):
+        self.old_values = []
+        first = True
+        for row_uid, col, value in zip(self.row_uids, self.cols, self.values):
+            self.old_values += [self.table_model.set_data_helper(row_uid, col, value)]
+            if first:
+                first = False
+                self.table_model.add_highlights = True
+        self.table_model.add_highlights = False
+
+    def undo(self):
+        first = True
+        for row_uid, col, old_value in zip(self.row_uids, self.cols, self.old_values):
+            self.table_model.set_data_helper(row_uid, col, old_value)
+            if first:
+                first = False
+                self.table_model.add_highlights = True
+        self.table_model.add_highlights = False
 
 class DeleteRowsAction:
     def __init__(self, table_model, rows):
@@ -216,57 +251,68 @@ class DeleteRowsAction:
 class PolarsTableModel(Core.QAbstractTableModel):
     def __init__(self, df, df_schema, out_fname, undo_redo):
         super().__init__()
-        self.df = df
-        self.df_schema = df_schema
+        self.df_schema = df_schema.copy()
+        self.df_schema['uid'] = int
+        # add a uid to each row
+        self.df = df.hstack([pl.Series('uid', list(range(df.shape[0])), dtype=pl.Int64)])
+        self.uid_cap = df.shape[0]
         self.undo_redo = undo_redo
         self.out_fname = out_fname
 
         self.highlight_cells = []
+        self.add_highlights = False
         self.curr_district = None
         self.curr_district_type = None
 
-    def rowCount(self, index): # unclear what index is fore
+    def rowCount(self, index): # unclear what index is for
         return self.df.shape[0]
 
-    def columnCount(self, index): # unclear what index is fore
-        return self.df.shape[1]
+    def columnCount(self, index): # unclear what index is for
+        return self.df.shape[1] - 1
 
     def headerData(self, section, orientation, role):
-        if role == Core.Qt.DisplayRole and orientation == Core.Qt.Horizontal and section < self.df.shape[1]:
-            section = (section + 2) % self.df.shape[1]
+        if role == Core.Qt.DisplayRole and orientation == Core.Qt.Horizontal and section < self.df.shape[1] - 1: 
+            section = (section + 2) % (self.df.shape[1] - 1)
             return Core.QVariant(self.df.columns[section])
         if role == Core.Qt.DisplayRole and orientation == Core.Qt.Vertical and section < self.df.shape[0]:
             return Core.QVariant(section+1)
         return Core.QVariant()
 
     def data(self, index, role):
-        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1]:
+        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1] - 1:
             return Core.QVariant()
 
         if role in (Core.Qt.DisplayRole, Core.Qt.EditRole):
-            return Core.QVariant(self.df[index.row(), (index.column() + 2) % self.df.shape[1]])
+            return Core.QVariant(self.df[index.row(), (index.column() + 2) % (self.df.shape[1] - 1)])
 
-        if role == Core.Qt.BackgroundRole and (index.row(), index.column()) in self.highlight_cells:
-            return Gui.QBrush(Gui.QColor(0, 255, 0))
+        if role == Core.Qt.BackgroundRole:
+            uid = self.df.with_row_count('row_nr').filter(pl.col('row_nr') == index.row())['uid'].item()
+            if (uid, index.column()) in self.highlight_cells:
+                return Gui.QBrush(Gui.QColor(0, 255, 0))
 
         return Core.QVariant()
 
     def setData(self, index, value, role):
+        print('in set data')
         if role != Core.Qt.EditRole:
             return False
-        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1]:
+        if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1] - 1:
             return False
 
-        if value != self.df[index.row(), (index.column() + 2) % self.df.shape[1]]:
+        if value != self.df[index.row(), (index.column() + 2) % (self.df.shape[1] - 1)]:
             self.undo_redo.do(SetDataAction(self, index, value))
         return True
 
-    def set_data_helper(self, index, value):
-        old_value = self.df[index.row(), (index.column() + 2) % self.df.shape[1]]
-        self.df[index.row(), (index.column() + 2) % self.df.shape[1]] = value
+    def set_data_helper(self, row_uid, column, value):
+        row = self.df.with_row_count('row_nr').filter(pl.col('uid') == row_uid).select('row_nr').item()
+        old_value = self.df[row, (column + 2) % (self.df.shape[1] - 1)]
+        if old_value != value:
+            self.df[row, (column + 2) % (self.df.shape[1] - 1)] = value
 
-        self.save()
-        self.reorganize()
+            self.save()
+            self.reorganize()
+            new_highlight_cells = [(row_uid, column)]
+            self.update_highlight(new_highlight_cells)
         
         return old_value
 
@@ -279,7 +325,10 @@ class PolarsTableModel(Core.QAbstractTableModel):
     def delete_rows_helper(self, rows):
         self.beginRemoveRows(Core.QModelIndex(), min(rows), max(rows))
         deleted_row_contents = self.df.with_row_count('row_nr').filter(pl.col('row_nr').is_in(rows))
+        print('in delete_rows_helper, deleting: ', deleted_row_contents)
+        print('current df before deletion', self.df)
         self.df = self.df.with_row_count('row_nr').filter(~pl.col('row_nr').is_in(rows)).drop('row_nr')
+        self.update_highlight([])
         self.endRemoveRows()
         self.save()
         self.reorganize()
@@ -288,6 +337,8 @@ class PolarsTableModel(Core.QAbstractTableModel):
     # assumes rows are contiguous
     def insert_rows_helper(self, rows, deleted_row_contents):
         self.beginInsertRows(Core.QModelIndex(), min(rows), max(rows))
+        print('in insert rows helper, reinserting: ', deleted_row_contents)
+        print('current df before reinsertion', self.df)
         self.df = pl.concat([
             self.df.with_row_count('row_nr').with_columns([
                 pl.when(
@@ -300,6 +351,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
             ]),
             deleted_row_contents
         ]).sort(by=['row_nr']).drop('row_nr')
+        self.update_highlight([(uid, column) for uid in deleted_row_contents['uid'] for column in range(self.df.shape[1] - 1)])
         self.endInsertRows()
         self.save()
         self.reorganize()
@@ -308,76 +360,104 @@ class PolarsTableModel(Core.QAbstractTableModel):
         return Core.Qt.ItemIsSelectable | Core.Qt.ItemIsEditable | Core.Qt.ItemIsEnabled
 
     def insert_new_menu_item(self, menu_item_data):
-        row = self.df.with_row_count().filter(
-            (pl.col('school_district') == menu_item_data[0]) &
-            (pl.col('district_type') == menu_item_data[1]) &
-            (pl.col('menu_item') == menu_item_data[2])
+        row = self.df.with_row_count('row_nr').filter(
+            (pl.col('school_district').str.to_uppercase() == menu_item_data[0].upper()) &
+            (pl.col('district_type').str.to_uppercase() == menu_item_data[1].upper()) &
+            (pl.col('menu_item').str.to_uppercase() == menu_item_data[2].upper())
         )
         assert row.shape[0] <= 1
-        old_highlight_cells = self.highlight_cells
 
         if row.shape[0] == 0:
             self.beginInsertRows(Core.QModelIndex(), 0, 0)
-            self.df = pl.DataFrame([menu_item_data], schema=self.df_schema).vstack(self.df)
+            print('inserting new menu item')
+            next_uid = self.get_next_uid()
+            self.df = pl.DataFrame([[*menu_item_data, next_uid]], schema=self.df_schema).vstack(self.df)
             self.endInsertRows()
 
-            self.highlight_cells = []
-            for col in range(self.df.shape[1]):
-                self.highlight_cells.append((0, col))
-            self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(0, self.df.shape[1] - 1), [Core.Qt.BackgroundRole])
+            new_highlight_cells = []
+            for col in range(self.df.shape[1] - 1):
+                new_highlight_cells.append((next_uid, col))
         else:
-            row_nr = row['row_nr'].item()
-            self.df = self.df.with_row_count().with_columns([
+            uid = row['uid'].item()
+            print('inserting preexstining menu item')
+            self.df = self.df.with_columns([
                 pl.when(
-                    pl.col('row_nr') != row_nr
+                    pl.col('uid') != uid
                 ).then(
                     pl.col('count')
                 ).otherwise(
                     pl.col('count') + menu_item_data[3]
                 )
-            ]).drop('row_nr')
-            cell = self.createIndex(row_nr, 1)
+            ])
+            cell = self.createIndex(row['row_nr'].item(), 1)
             self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
-            self.highlight_cells = [(row_nr, 1)]
+            new_highlight_cells = [(uid, 1)]
 
-        for cell in old_highlight_cells:
-            self.dataChanged.emit(self.createIndex(*cell), self.createIndex(*cell), [Core.Qt.BackgroundRole])
+        self.update_highlight(new_highlight_cells)
 
         self.save()
+        print(self.df)
 
     def remove_menu_item_data(self, menu_item_data):
-        row = self.df.with_row_count().filter(
-            (pl.col('school_district') == menu_item_data[0]) &
-            (pl.col('district_type') == menu_item_data[1]) &
-            (pl.col('menu_item') == menu_item_data[2])
+        row = self.df.with_row_count('row_nr').filter(
+            (pl.col('school_district').str.to_uppercase() == menu_item_data[0].upper()) &
+            (pl.col('district_type').str.to_uppercase() == menu_item_data[1].upper()) &
+            (pl.col('menu_item').str.to_uppercase() == menu_item_data[2].upper())
         )
         assert row.shape[0] == 1
-        old_highlight_cells = self.highlight_cells
 
         if row['count'].item() == menu_item_data[3]:
             self.deleteRows([self.createIndex(row['row_nr'].item(), 0)])
-            self.highlight_cells = []
+            new_highlight_cells = []
         else:
-            row_nr = row['row_nr'].item()
-            self.df = self.df.with_row_count().with_columns([
+            uid = row['uid'].item()
+            print('removing menu item')
+            self.df = self.df.with_columns([
                 pl.when(
-                    pl.col('row_nr') != row_nr
+                    pl.col('uid') != uid
                 ).then(
                     pl.col('count')
                 ).otherwise(
                     pl.col('count') - menu_item_data[3]
                 )
-            ]).drop('row_nr')
-            cell = self.createIndex(row_nr, 1)
-            self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
-            self.highlight_cells = [(row_nr, 1)]
+            ])
+            new_highlight_cells = [(uid, 1)]
 
-        for cell in old_highlight_cells:
-            self.dataChanged.emit(self.createIndex(*cell), self.createIndex(*cell), [Core.Qt.BackgroundRole])
+        self.update_highlight(new_highlight_cells)
+
+    def update_highlight(self, new_cells):
+        if not self.add_highlights:
+            old_highlight_cells = self.highlight_cells
+
+            self.highlight_cells = new_cells
+            for cell in self.highlight_cells:
+                row = self.df.with_row_count('row_nr').filter(pl.col('uid') == cell[0]).select('row_nr').item()
+                cell = self.createIndex(row, cell[1])
+                self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+
+            print(old_highlight_cells)
+            for cell in old_highlight_cells:
+                temp_df = self.df.with_row_count('row_nr').filter(pl.col('uid') == cell[0])
+                if temp_df.shape[0] == 0:
+                    continue
+                assert temp_df.shape[0] == 1
+                row = temp_df.select('row_nr').item()
+                cell = self.createIndex(row, cell[1])
+                self.dataChanged.emit(cell, cell, [Core.Qt.BackgroundRole])
+        else:
+            self.highlight_cells += new_cells
+            for cell in new_cells:
+                row = self.df.with_row_count('row_nr').filter(pl.col('uid') == cell[0]).select('row_nr').item()
+                cell = self.createIndex(row, cell[1])
+                self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
     def save(self):
         if self.out_fname:
-            self.df.sort(by=['school_district', 'district_type', 'menu_item']).write_csv(self.out_fname)
+            self.df.sort(by=[
+                pl.col('school_district').str.to_uppercase(),
+                pl.col('district_type').str.to_uppercase(),
+                pl.col('menu_item').str.to_uppercase()
+            ]).drop('uid').write_csv(self.out_fname)
 
     def focus_school_district(self, school_district, district_type):
         self.curr_district = school_district
@@ -385,15 +465,25 @@ class PolarsTableModel(Core.QAbstractTableModel):
         self.reorganize()
 
     def reorganize(self):
+        print('reorganizing, preorganize df', self.df)
         self.df = self.df.sort(by=[
-            pl.col('school_district') != self.curr_district,
-            (pl.col('school_district') != self.curr_district) | (pl.col('district_type') != self.curr_district_type),
-            'school_district',
-            'district_type',
+            pl.col('school_district').str.to_uppercase() != self.curr_district.upper(),
+            (pl.col('school_district').str.to_uppercase() != self.curr_district.upper()) | (pl.col('district_type').str.to_uppercase() != self.curr_district_type.upper()),
+            pl.col('school_district').str.to_uppercase(),
+            pl.col('district_type').str.to_uppercase(),
+            # organize by menu item alphabetically, but only when not in the current district
+            pl.when(
+                (pl.col('school_district').str.to_uppercase() != self.curr_district.upper()) | (pl.col('district_type').str.to_uppercase() != self.curr_district_type.upper())
+            ).then(
+                pl.col('menu_item').str.to_uppercase()
+            ).otherwise('')
         ])
-        self.highlight_first = False
-        self.count_highlight = None
-        self.dataChanged.emit(self.createIndex(0,0), self.createIndex(*self.df.shape), [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+        print('reorganizing, posrtorganize df', self.df)
+        self.dataChanged.emit(self.createIndex(0,0), self.createIndex(self.df.shape[0], self.df.shape[1] - 1), [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+
+    def get_next_uid(self):
+        self.uid_cap += 1
+        return self.uid_cap
 
 class UndoRedo:
     def __init__(self):
@@ -598,7 +688,7 @@ class MyWindow(Widgets.QMainWindow):
        
         self.table_model = None
         self.table_view = Widgets.QTableView()
-        #self.table_view.installEventFilter(self)
+        self.table_view.installEventFilter(self)
         self.table_view.setCornerButtonEnabled(False)
         right_column.addWidget(self.table_view, 1)
         self.manual_resize_menu_item = False
@@ -638,6 +728,15 @@ class MyWindow(Widgets.QMainWindow):
         fname = Widgets.QFileDialog.getOpenFileName(self, "CSV file to load", filter="CSV files (*.csv)")[0]
         if fname:
             df = pl.read_csv(fname)
+            if list(df.columns) != list(self.df_schema.keys()):
+                box = Widgets.QMessageBox()
+                box.setText(
+                    f"Can only load CSVs with exactly the columns {list(self.df_schema.keys())}. "
+                    f"Instead, was asked to load a CSV with the columns {list(df.columns)}. "
+                    "Aborting loading the CSV."
+                )
+                box.exec()
+                return
             # TODO don't crash if not true
             assert list(df.columns) == list(self.df_schema.keys())
             self.table_model = PolarsTableModel(df, self.df_schema, fname, self.undo_redo)
@@ -763,6 +862,8 @@ class MyWindow(Widgets.QMainWindow):
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
+        if event.type() == Core.QEvent.KeyPress:
+            print('in event filter', source, event)
         if (source is self.curr_image_widget and event.type() == Core.QEvent.Resize and self.curr_image_widget is not None):
             # re-scale the pixmap when the label resizes
             ratio = min(self.curr_image_widget.width()/self.base_widths[self.curr_menu_idx][self.curr_menu_page], self.curr_image_widget.height()/self.base_heights[self.curr_menu_idx][self.curr_menu_page])
@@ -777,10 +878,17 @@ class MyWindow(Widgets.QMainWindow):
         else:
             self.key_press_consumed = False
 
-        out = super().eventFilter(source, event)
-        return self.key_press_consumed or out
+        if self.key_press_consumed:
+#            if event.type() == Core.QEvent.KeyPress:
+#                print('returning true from event filter', source, event)
+            return True
+
+#        if event.type() == Core.QEvent.KeyPress:
+#            print('returning super() from event filter', source, event)
+        return super().eventFilter(source, event)
 
     def keyPressEvent(self, event):
+        print('in key press event', event)
         # add to table
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_Return:
@@ -790,7 +898,12 @@ class MyWindow(Widgets.QMainWindow):
                     palette.setColor(palette.Button, Gui.QColor(Core.Qt.red))
                     button.setPalette(palette)
                 self.key_press_consumed = True
-                return 
+                return
+
+            if self.table_view.state() == Widgets.QAbstractItemView.EditingState:
+                self.key_press_consumed = False
+                self.menu_item_edit.setPalette(self.application.palette())
+                return
 
             if self.curr_image_widget is None:
                 palette = self.load_menus_button.palette()
@@ -876,10 +989,17 @@ class MyWindow(Widgets.QMainWindow):
         # delete selected table contents
         if event.type() == Core.QEvent.KeyPress and \
            event.key() in (Core.Qt.Key_Backspace, Core.Qt.Key_Delete):
-            for idx in self.table_view.selectedIndexes():
-                self.table_model.setData(idx, '', Core.Qt.EditRole)
-            self.table_model.deleteRows(self.table_view.selectionModel().selectedRows())
-            self.key_press_consumed = False
+            if len(self.table_view.selectionModel().selectedRows()) > 0:
+                self.table_model.deleteRows(self.table_view.selectionModel().selectedRows())
+                self.key_press_consumed = True
+            else:
+                indices = list(self.table_view.selectedIndexes())
+                if len(indices) > 0:
+                    self.undo_redo.do(SetDatasAction(self.table_model, indices, ['' for _ in range(len(indices))]))
+                    self.key_press_consumed = True
+                else:
+                    self.key_press_consumed = False
+                self.table_view.setSelection(Core.QRect(0, 0, self.table_model.df.shape[0], self.table_model.df.shape[1] - 1), Core.QItemSelectionModel.Clear)
             return
 
         # undo
