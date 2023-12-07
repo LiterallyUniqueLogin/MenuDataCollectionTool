@@ -3,8 +3,13 @@
 # todo instructional movie
 
 # Mention:
-# Undo redo/enter needs main table not to be focused
+# automatic resorting
+# loading a PDF with multiple pages
+# loading multiple PDFs - reenter school in between
+# random details
 # delete will work on main table first if focused, not the other places to type
+# Undo redo/enter needs main table not to be focused
+# closing requires focusing
 
 # not doing
 # highlighting deleted rows somehow
@@ -546,6 +551,77 @@ class NextMenuAction:
     def undo(self):
         self.window.previous_menu()
 
+class MyCalendarWidget(Widgets.QCalendarWidget):
+    def __init__(self):
+        super().__init__()
+        self.setVerticalHeaderFormat(self.NoVerticalHeader)
+        self.setDateEditEnabled(False)
+        self.setFirstDayOfWeek(Core.Qt.Sunday)
+
+        self.selected_dates = [self.selectedDate()]
+        self.clicked.connect(self.date_selected)
+
+        self.highlight_format = Gui.QTextCharFormat()
+        self.highlight_format.setBackground(self.palette().brush(Gui.QPalette.Highlight))
+        self.highlight_format.setForeground(self.palette().color(Gui.QPalette.HighlightedText))
+
+        self.unhighlight_format = Gui.QTextCharFormat()
+        self.unhighlight_format.setBackground(Gui.QColor(Core.Qt.white))
+        self.unhighlight_format.setForeground(Gui.QColor(Core.Qt.black))
+
+        #self.setDateTextFormat(self.selectedDate(), Gui.QTextCharFormat())
+        #self.setSelectedDate(Core.QDate())
+#        selection = self.selectedDate()
+#        if selection.dayOfWeek() >= 6:
+#            color = Core.Qt.red
+#        else:
+#            color = Core.Qt.black
+#        hide_init_select_format = Gui.QTextCharFormat()
+#        hide_init_select_format.setForeground(Gui.QBrush(Gui.QColor(color)))
+#        hide_init_select_format.setBackground(Gui.QBrush(Gui.QColor(Core.Qt.white)))
+#        self.setDateTextFormat(selection, hide_init_select_format)
+#        self.setStyleSheet('''
+#            QCalendarWidget QAbstractItemView {
+#                selection-background-color: white;
+#                selection-color: black;
+#            }
+#        ''')
+
+    def date_selected(self, date):
+        if Widgets.QApplication.instance().keyboardModifiers() & Core.Qt.ShiftModifier:
+            self.selected_dates.append(date)
+            for date2 in self.selected_dates:
+                self.setDateTextFormat(date2, self.highlight_format)
+        else:
+            for date2 in self.selected_dates:
+                self.setDateTextFormat(date2, self.unhighlight_format)
+            self.selected_dates = [date]
+        print(f'selected dates {self.selected_dates}')
+
+class MyCalendarDialog(Widgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setSizeGripEnabled(True)
+        central_layout = Widgets.QVBoxLayout()
+        self.setLayout(central_layout)
+        self.calendar_widget = MyCalendarWidget()
+        self.calendar_widget.installEventFilter(self)
+        central_layout.addWidget(self.calendar_widget)
+        button = Widgets.QPushButton("Done", self)
+        button.setDefault(True)
+        button.clicked.connect(self.accept)
+        button.installEventFilter(self)
+        central_layout.addWidget(button)
+
+    def keyPressEvent(self, event):
+        # TODO make this work
+        if event.type() == Core.QEvent.KeyPress and \
+           event.key() == Core.Qt.Key_Return:
+            self.accept()
+
+    def dates(self):
+        return self.calendar_widget.selected_dates
+
 class MyWindow(Widgets.QMainWindow):
     def __init__(self, app, df_schema):
         super().__init__()
@@ -698,6 +774,14 @@ class MyWindow(Widgets.QMainWindow):
 
         self.school_name_edit.textEdited.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()) if self.table_model else None)
         self.school_type_select.currentTextChanged.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()) if self.table_model else None)
+
+        calendar_dialog = MyCalendarDialog()
+        ret_code = calendar_dialog.exec()
+        if ret_code == Widgets.QDialog.Rejected:
+            print("rejected")
+        else:
+            assert ret_code == Widgets.QDialog.Accepted
+            print(f"accepted with dates {calendar_dialog.dates()}")
 
     def change_count_layout_visibility(self):
         for widget in self.count_label, self. item_count, self.item_count_sticky:
@@ -889,9 +973,12 @@ class MyWindow(Widgets.QMainWindow):
 
     def keyPressEvent(self, event):
         print('in key press event', event)
+        if event.type() != Core.QEvent.KeyPress:
+            self.key_press_consumed = False
+            return
+
         # add to table
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_Return:
+        if event.key() == Core.Qt.Key_Return:
             if self.table_model is None:
                 for button in self.choose_new_table_button, self.load_existing_table_button:
                     palette = button.palette()
@@ -963,32 +1050,34 @@ class MyWindow(Widgets.QMainWindow):
             return
             
         # switch plant based status
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_P and \
-           (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier:
+        if (
+            event.key() == Core.Qt.Key_P and \
+            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier
+        ):
             self.plant_based_buttons.button((self.plant_based_buttons.checkedId() + 1) % 3).click()
             self.key_press_consumed = True
             return
 
         # switch plant based status
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_V and \
-           (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier:
+        if (
+            event.key() == Core.Qt.Key_V and \
+            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier
+        ):
             self.veg_buttons.button((self.veg_buttons.checkedId() + 1) % 3).click()
             self.key_press_consumed = True
             return
 
         # swtich data mode status
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_M and \
-           (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier:
+        if (
+            event.key() == Core.Qt.Key_M and \
+            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier
+        ):
             self.data_mode_buttons.button((self.data_mode_buttons.checkedId() + 1) % 2).click()
             self.key_press_consumed = True
             return
 
         # delete selected table contents
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() in (Core.Qt.Key_Backspace, Core.Qt.Key_Delete):
+        if event.key() in (Core.Qt.Key_Backspace, Core.Qt.Key_Delete):
             if len(self.table_view.selectionModel().selectedRows()) > 0:
                 self.table_model.deleteRows(self.table_view.selectionModel().selectedRows())
                 self.key_press_consumed = True
@@ -1003,19 +1092,21 @@ class MyWindow(Widgets.QMainWindow):
             return
 
         # undo
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_Z and \
-           (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier and \
-           (self.application.keyboardModifiers() & Core.Qt.ShiftModifier) != Core.Qt.ShiftModifier:
+        if (
+            event.key() == Core.Qt.Key_Z and \
+            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier and \
+            (self.application.keyboardModifiers() & Core.Qt.ShiftModifier) != Core.Qt.ShiftModifier
+        ):
             self.undo_redo.undo()
             self.key_press_consumed = True
             return
 
         # redo
-        if event.type() == Core.QEvent.KeyPress and \
-           event.key() == Core.Qt.Key_Z and \
-           (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier and \
-           (self.application.keyboardModifiers() & Core.Qt.ShiftModifier) == Core.Qt.ShiftModifier:
+        if (
+            event.key() == Core.Qt.Key_Z and \
+            (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier and \
+            (self.application.keyboardModifiers() & Core.Qt.ShiftModifier) == Core.Qt.ShiftModifier
+        ):
             self.undo_redo.redo()
             self.key_press_consumed = True
             return
