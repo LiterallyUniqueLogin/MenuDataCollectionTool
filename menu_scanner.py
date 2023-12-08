@@ -2,6 +2,9 @@
 # todo instructional movie
 
 # Mention:
+# menu data collection tool
+# the work you're doing is valuable, I thought this tool might help you, whipped up in my spare time
+# hope you like it!
 # don't know how tech savvy you are or aren't, what your expectations or desired workflow will be
 # suppose you have menus
 # basic overview
@@ -55,6 +58,7 @@
 #  losing date window in background (also error popup for loading CSVs) ( can press esc)
 #  shift to select or deselct multiple dates
 #  will not highlight multiple items on the menu
+#  cannot go down to zero selected dates
 # manual editing
 #   won't prevent you from doing something silly
 
