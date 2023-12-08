@@ -9,15 +9,27 @@
 # TODO need default enter new menu item to bring up calendar
 
 # Mention:
-# back up frequently
+# suppose you have menus
+#basic overview
+# new file
+# load menu
+# Fill in district name and type
+# go
+# show file
+# quit
 # works with CSVs
 # export to excel
-# manual editing
+# changes won't propogate
+# back up frequently
+# reload file
+# won't keep highlighting - finish full PDFs, keep track of what you've done
+# shift selection
+# loading a PDF with multiple pages
+# loading multiple PDFs - reenter school in between
 # undo/redo
 # plant based and veg
 # date mode
-# loading a PDF with multiple pages
-# loading multiple PDFs - reenter school in between
+# manual editing
 # automatic resorting
 # cannot manually modify date field
 
@@ -315,7 +327,7 @@ class MyTableView(Widgets.QTableView):
         return super().edit(index, trigger, event)
 
 class PolarsTableModel(Core.QAbstractTableModel):
-    def __init__(self, df, df_schema, out_fname, undo_redo):
+    def __init__(self, df, df_schema, out_fname, undo_redo, data_mode_buttons):
         super().__init__()
         self.df_schema = df_schema.copy()
         self.df_schema['uid'] = int
@@ -324,6 +336,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
         self.uid_cap = df.shape[0]
         self.undo_redo = undo_redo
         self.out_fname = out_fname
+        self.data_mode_buttons = data_mode_buttons
 
         self.highlight_cells = []
         self.add_highlights = False
@@ -433,6 +446,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
         return Core.Qt.ItemIsSelectable | Core.Qt.ItemIsEditable | Core.Qt.ItemIsEnabled
 
     def insert_new_menu_item(self, menu_item_data):
+        print('in insert new')
         row = self.df.with_row_count('row_nr').filter(
             (pl.col('school_district').str.to_uppercase() == menu_item_data[0].upper()) &
             (pl.col('district_type').str.to_uppercase() == menu_item_data[1].upper()) &
@@ -441,7 +455,18 @@ class PolarsTableModel(Core.QAbstractTableModel):
         assert row.shape[0] <= 1
 
         if row.shape[0] == 0:
-            
+            print('new row')
+            if self.data_mode_buttons.checkedId() == 1:
+                print('got to calendar dialog')
+                calendar_dialog = MyCalendarDialog([])
+                ret_code = calendar_dialog.exec()
+                if ret_code != Widgets.QDialog.Rejected:
+                    assert ret_code == Widgets.QDialog.Accepted
+                    menu_item_data[3] = len(calendar_dialog.dates())
+                    menu_item_data[4] = ','.join(f'{date.month()}/{date.day()}/{date.year()}' for date in calendar_dialog.dates())
+                else:
+                    return
+
             self.beginInsertRows(Core.QModelIndex(), 0, 0)
             #print('inserting new menu item')
             next_uid = self.get_next_uid()
@@ -891,7 +916,7 @@ class MyWindow(Widgets.QMainWindow):
             if not fname.endswith('.csv'):
                 fname += '.csv'
             df = pl.DataFrame(schema=self.df_schema)
-            self.table_model = PolarsTableModel(df, df_schema, fname, self.undo_redo)
+            self.table_model = PolarsTableModel(df, df_schema, fname, self.undo_redo, self.data_mode_buttons)
             self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip())
             self.table_view.setModel(self.table_model)
             self.set_table_view_sizing()
@@ -936,7 +961,7 @@ class MyWindow(Widgets.QMainWindow):
                             self.fail_load_table_date_format(row, date_num)
                             return
 
-            self.table_model = PolarsTableModel(df, self.df_schema, fname, self.undo_redo)
+            self.table_model = PolarsTableModel(df, self.df_schema, fname, self.undo_redo, self.data_mode_buttons)
             self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip())
             self.table_view.setModel(self.table_model)
             self.set_table_view_sizing()
@@ -1140,6 +1165,7 @@ class MyWindow(Widgets.QMainWindow):
                 self.key_press_consumed = True
                 return
 
+            # TODO is this the right place to handle this?
             if self.data_mode_buttons.checkedId() == 0:
                 menu_item_data = [
                     self.school_name_edit.text(),
