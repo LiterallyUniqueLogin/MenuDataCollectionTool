@@ -1,7 +1,7 @@
 # todo final repackaging
 # todo instructional movie
 
-# Mention:
+# instructional video script:
 # menu data collection tool
 # the work you're doing is valuable, I thought this tool might help you, whipped up in my spare time
 # hope you like it!
@@ -62,9 +62,10 @@
 # manual editing
 #   won't prevent you from doing something silly
 
-# can always reach out to Nora and ask her to relay questions - double check with Nora
+# can always reach out to Nora and ask her to relay questions
 # can always reach out to me jonathan.margoliash@gmail.com
 
+# github link https://github.com/LiterallyUniqueLogin/MenuScanner
 # log in case of problems
 # random details
 #   automatic resorting
