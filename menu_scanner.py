@@ -1,14 +1,5 @@
-# todo load school types
-# Todo calendar dates
-# todo instructional movie
-# test won't load wrong dates
-# todo highlight date field change when editing count
-# todo cannot undo manual edit to count
-# TODO need to better handle pushing delete on dates column or manually editing count
-# when in a different data mode (and properly handling undos/redos)
-# TODO need default enter new menu item to bring up calendar
 # todo final repackaging
-# remove highlighting when appropriate, not sure I've covered all corner cases
+# todo instructional movie
 
 # Mention:
 # suppose you have menus
@@ -112,28 +103,19 @@ if hasattr(sys, '_MEIPASS'):
     # point tesseract to the unpacked tessdata
     os.environ["TESSDATA_PREFIX"] = sys._MEIPASS
 
-# load the input image, convert it from BGR to RGB channel ordering,
-# and use Tesseract to localize each area of text in the input image
-#file_path = r"\Users\Jonathan\Downloads\Screenshot 2023-10-21 144424.png" #args["image"]
-#image = cv2.imread(file_path)
-#rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-#doc = fitz.open(r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023.pdf")
-
 def create_images_from_pdf(pdf_fname):
     doc = fitz.open(pdf_fname)
     image_files = []
     for page in doc:
         image_file = tempfile.NamedTemporaryFile(suffix='.png')
         image_fname = image_file.name
-        page.get_pixmap(matrix=fitz.Matrix(8,8)).save(image_fname) #r"\Users\Jonathan\Downloads\Banta ESD Elementary Lunch Menu October 2023_pymupdf.png")
+        page.get_pixmap(matrix=fitz.Matrix(8,8)).save(image_fname)
         image_files.append(image_file)
     return image_files
 
 def ocr(image_fname):
     pix_width = Gui.QPixmap(image_fname).width()
 
-    #results = pytesseract.image_to_data(rgb, output_type=pytesseract.Output.DICT)
     results = pytesseract.image_to_data(image_fname, output_type=pytesseract.Output.DICT)
 
     # loop over each of the individual text localizations
@@ -258,7 +240,8 @@ class SetDataAction:
         dates_from_row = self.table_model.df.filter(pl.col('uid') == self.row_uid).select('dates').item()
         if self.col == 1 and self.value != str(len(dates_from_row.split(','))):
             self.lost_dates = dates_from_row
-            self.table_model.add_highlights = True
+            if self.old_value != self.value:
+                self.table_model.add_highlights = True
             self.table_model.set_data_helper(self.row_uid, 2, '')
             self.table_model.add_highlights = False
         else:
@@ -267,7 +250,8 @@ class SetDataAction:
     def undo(self):
         self.table_model.set_data_helper(self.row_uid, self.col, self.old_value)
         if self.lost_dates is not None:
-            self.table_model.add_highlights = True
+            if self.old_value != self.value:
+                self.table_model.add_highlights = True
             self.table_model.set_data_helper(self.row_uid, 2, self.lost_dates)
             self.table_model.add_highlights = False
 
@@ -294,8 +278,11 @@ class SetDatasAction:
         self.lost_dates = [None]*len(self.values)
         for action_idx in range(len(self.values)):
             dates_from_row = self.table_model.df.filter(pl.col('uid') == self.row_uids[action_idx]).select('dates').item()
-            if self.cols[action_idx] == 1 and self.values[action_idx] != len(dates_from_row.split(',')):
-                print('clearing lost dates', self.values[action_idx], dates_from_row, self.row_uids[action_idx])
+            if (
+                self.cols[action_idx] == 1 and
+                (self.row_uids[action_idx], 2) not in list(zip(self.row_uids, self.cols)) and
+                self.values[action_idx] != len(dates_from_row.split(','))
+            ):
                 self.lost_dates[action_idx] = dates_from_row
                 self.table_model.set_data_helper(self.row_uids[action_idx], 2, '')
         self.table_model.add_highlights = False
@@ -368,8 +355,8 @@ class MyTableView(Widgets.QTableView):
                 self.month_edit.setPalette(palette)
                 return False
 
-            for edit in self.year_edit, self.month_edit:
-                edit.setPalette(Widgets.QApplication.instance().palette())
+            for line_edit in self.year_edit, self.month_edit:
+                line_edit.setPalette(Widgets.QApplication.instance().palette())
             
             calendar_dialog = MyCalendarDialog(date_string, self.year_edit.text(), self.month_edit.text())
             ret_code = calendar_dialog.exec()
@@ -444,7 +431,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
         return Core.QVariant()
 
     def setData(self, index, value, role):
-        print('in set data')
         if role != Core.Qt.EditRole:
             return False
         if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1] - 1:
@@ -455,22 +441,18 @@ class PolarsTableModel(Core.QAbstractTableModel):
         return True
 
     def set_data_helper(self, row_uid, column, value):
-        print('in set data helper, setting', row_uid, column, value)
         row = self.df.with_row_count('row_nr').filter(pl.col('uid') == row_uid).select('row_nr').item()
         old_value = self.df[row, (column + 2) % (self.df.shape[1] - 1)]
-        if old_value != value:
-            print('df before set', self.df)
-            self.df[row, (column + 2) % (self.df.shape[1] - 1)] = value
-            print('df after set', self.df)
+        self.df[row, (column + 2) % (self.df.shape[1] - 1)] = value
 
-            cell = self.createIndex(row, column)
-            self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+        cell = self.createIndex(row, column)
+        self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
-            new_highlight_cells = [(row_uid, column)]
-            self.update_highlight(new_highlight_cells)
+        new_highlight_cells = [(row_uid, column)]
+        self.update_highlight(new_highlight_cells)
 
-            self.save()
-            self.reorganize()
+        self.save()
+        self.reorganize()
 
         return old_value
 
@@ -483,10 +465,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
     def delete_rows_helper(self, rows):
         self.beginRemoveRows(Core.QModelIndex(), min(rows), max(rows))
         deleted_row_contents = self.df.with_row_count('row_nr').filter(pl.col('row_nr').is_in(rows))
-        print('in delete_rows_helper, deleting: ', deleted_row_contents)
-        print('current df before deletion', self.df)
         self.df = self.df.with_row_count('row_nr').filter(~pl.col('row_nr').is_in(rows)).drop('row_nr')
-        print('df after deletion', self.df)
         self.update_highlight([])
         self.endRemoveRows()
         self.save()
@@ -496,8 +475,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
     # assumes rows are contiguous
     def insert_rows_helper(self, rows, row_contents):
         self.beginInsertRows(Core.QModelIndex(), min(rows), max(rows))
-        print('in insert rows helper, inserting: ', row_contents)
-        print('current df before insertion', self.df)
         self.df = pl.concat([
             self.df.with_row_count('row_nr').with_columns([
                 pl.when(
@@ -510,7 +487,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
             ]),
             row_contents
         ]).sort(by=['row_nr']).drop('row_nr')
-        print('df after insertion', self.df)
         self.update_highlight([(uid, column) for uid in row_contents['uid'] for column in range(self.df.shape[1] - 1)])
         self.endInsertRows()
         self.save()
@@ -529,7 +505,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
                 cell = self.createIndex(row, cell[1])
                 self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
-            #print(old_highlight_cells)
             for cell in old_highlight_cells:
                 temp_df = self.df.with_row_count('row_nr').filter(pl.col('uid') == cell[0])
                 if temp_df.shape[0] == 0:
@@ -559,7 +534,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
         self.reorganize()
 
     def reorganize(self):
-        #print('reorganizing, preorganize df', self.df)
         self.df = self.df.sort(by=[
             pl.col('school_district').str.to_uppercase() != self.curr_district.upper(),
             (pl.col('school_district').str.to_uppercase() != self.curr_district.upper()) | (pl.col('district_type').str.to_uppercase() != self.curr_district_type.upper()),
@@ -572,7 +546,6 @@ class PolarsTableModel(Core.QAbstractTableModel):
                 pl.col('menu_item').str.to_uppercase()
             ).otherwise(pl.lit(''))
         ])
-        #print('reorganizing, posrtorganize df', self.df)
         self.dataChanged.emit(self.createIndex(0,0), self.createIndex(self.df.shape[0], self.df.shape[1] - 1), [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
     def get_next_uid(self):
@@ -626,32 +599,33 @@ class PolarsTableModel(Core.QAbstractTableModel):
                     [self.createIndex(row_nr, 1), self.createIndex(row_nr, 2)],
                     [calendar_dialog.out_num_dates(), calendar_dialog.out_date_string()]
                 ))
-            #self.undo_redo.do(InsertNewMenuItemAction(self.table_model, menu_item_data, self.menu_item_edit, self.application.palette()))
-            # TODO handle palettes
-
         return True
     
 class UndoRedo:
-    def __init__(self):
+    def __init__(self, my_window):
         self.undo_stack = []
         self.redo_stack = []
+        self.my_window = my_window
 
     def do(self, action):
         action.do()
         self.undo_stack.append(action)
         self.redo_stack = []
+        self.my_window.clear_palette_changes()
 
     def undo(self):
         if self.undo_stack:
             action = self.undo_stack.pop()
             action.undo()
             self.redo_stack.append(action)
+            self.my_window.clear_palette_changes()
 
     def redo(self):
         if self.redo_stack:
             action = self.redo_stack.pop()
             action.do()
             self.undo_stack.append(action)
+            self.my_window.clear_palette_changes()
 
     def clear(self):
         self.undo_stack = []
@@ -765,9 +739,7 @@ class MyCalendarDialog(Widgets.QDialog):
         return len(self.calendar_widget.selected_dates)
 
     def out_date_string(self):
-        out_date_string = ','.join(f'{date.month()}/{date.day()}/{date.year()}' for date in self.calendar_widget.selected_dates)
-        print(out_date_string)
-        return out_date_string
+        return ','.join(f'{date.month()}/{date.day()}/{date.year()}' for date in self.calendar_widget.selected_dates)
 
 class MyWindow(Widgets.QMainWindow):
     def __init__(self, app, df_schema):
@@ -777,7 +749,7 @@ class MyWindow(Widgets.QMainWindow):
 
         self.application = app
         self.df_schema = df_schema
-        self.undo_redo = UndoRedo()
+        self.undo_redo = UndoRedo(self)
 
         central_widget = Widgets.QWidget()
         self.setCentralWidget(central_widget)
@@ -833,6 +805,7 @@ class MyWindow(Widgets.QMainWindow):
         school_name_row.addLayout(school_type_col)
         school_type_col.addWidget(Widgets.QLabel("School type:"))
         self.school_type_select = Widgets.QComboBox()
+        self.school_type_select.setMinimumWidth(150)
         self.school_type_select.installEventFilter(self)
         self.school_type_select.addItems([
             "Elementary",
@@ -1018,6 +991,12 @@ class MyWindow(Widgets.QMainWindow):
             self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip())
             self.table_view.setModel(self.table_model)
             self.set_table_view_sizing()
+            for school_type in df.sort(by='district_type')['district_type']:
+                school_type = school_type.strip()
+                if not school_type:
+                    continue
+                if school_type.upper() not in [self.school_type_select.itemText(idx).strip().upper() for idx in range(self.school_type_select.count())]:
+                    self.school_type_select.addItem(school_type.upper())
         for button in self.choose_new_table_button, self.load_existing_table_button:
             button.setPalette(self.application.palette())
 
@@ -1136,13 +1115,21 @@ class MyWindow(Widgets.QMainWindow):
             self.setup_new_menu(len(self.image_widgets))
 
     def clear_palette_changes(self):
-        #TODO fill
-        pass
+        for widget in (
+            self.year_edit,
+            self.choose_new_table_button,
+            self.load_existing_table_button,
+            self.menu_item_edit,
+            self.load_menus_button,
+            self.school_name_edit,
+            self.school_type_select,
+            self.year_edit,
+            self.month_edit
+        ):
+            widget.setPalette(self.application.palette())
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
-        #if event.type() == Core.QEvent.KeyPress:
-            #print('in event filter', source, event)
         if (source is self.curr_image_widget and event.type() == Core.QEvent.Resize and self.curr_image_widget is not None):
             # re-scale the pixmap when the label resizes
             ratio = min(self.curr_image_widget.width()/self.base_widths[self.curr_menu_idx][self.curr_menu_page], self.curr_image_widget.height()/self.base_heights[self.curr_menu_idx][self.curr_menu_page])
@@ -1158,16 +1145,11 @@ class MyWindow(Widgets.QMainWindow):
             self.key_press_consumed = False
 
         if self.key_press_consumed:
-#            if event.type() == Core.QEvent.KeyPress:
-#                #print('returning true from event filter', source, event)
             return True
 
-#        if event.type() == Core.QEvent.KeyPress:
-#            #print('returning super() from event filter', source, event)
         return super().eventFilter(source, event)
 
     def keyPressEvent(self, event):
-        #print('in key press event', event)
         if event.type() != Core.QEvent.KeyPress:
             self.key_press_consumed = False
             return
@@ -1222,13 +1204,25 @@ class MyWindow(Widgets.QMainWindow):
                 self.key_press_consumed = True
                 return
 
-            if self.data_mode_buttons.checkedId() == 1:
+            if self.data_mode_buttons.checkedId() == 0:
+                try:
+                    int(self.item_count.text())
+                except ValueError:
+                    palette = self.item_count.palette()
+                    palette.setColor(palette.Base, Gui.QColor(Gui.QColorConstants.Svg.lightcoral))
+                    self.item_count.setPalette(palette)
+                    self.key_press_consumed = True
+                    return
+                else:
+                    self.item_count.setPalette(self.application.palette())
+            else:
                 if len(self.year_edit.text()) != 4:
                     palette = self.year_edit.palette()
                     palette.setColor(palette.Base, Gui.QColor(Gui.QColorConstants.Svg.lightcoral))
                     self.year_edit.setPalette(palette)
                     self.key_press_consumed = True
                     return
+                self.year_edit.setPalette(self.application.palette())
                 try:
                     datetime.datetime(int(self.year_edit.text()), int(self.month_edit.text()), 1)
                 except ValueError:
@@ -1237,9 +1231,9 @@ class MyWindow(Widgets.QMainWindow):
                     self.month_edit.setPalette(palette)
                     self.key_press_consumed = True
                     return
-            else:
-                for edit in self.year_edit, self.month_edit:
-                    edit.setPalette(self.application.palette())
+                else:
+                    for edit in self.year_edit, self.month_edit:
+                        edit.setPalette(self.application.palette())
 
             # insert menu item
             menu_item_data = [
@@ -1262,6 +1256,12 @@ class MyWindow(Widgets.QMainWindow):
                 self.plant_based_buttons.button(2).click()
                 self.veg_buttons.button(2).click()
                 self.curr_image_widget.temp_highlighted = []
+
+                if self.school_type_select.currentText().strip().upper() not in [
+                    self.school_type_select.itemText(idx).strip().upper() for idx in range(self.school_type_select.count())
+                ]:
+                    self.school_type_select.addItem(self.school_type_select.currentText())
+
             self.key_press_consumed = True
             return
 
@@ -1274,7 +1274,7 @@ class MyWindow(Widgets.QMainWindow):
             self.key_press_consumed = True
             return
 
-        # switch plant based status
+        # switch veg status
         if (
             event.key() == Core.Qt.Key_V and \
             (self.application.keyboardModifiers() & Core.Qt.ControlModifier) == Core.Qt.ControlModifier
@@ -1360,4 +1360,3 @@ window = MyWindow(
 window.show()
 app.exec()
 
-#pdf_fname = '/mnt/c/Users/Jonathan/Downloads/Banta ESD Elementary Lunch Menu October 2023.pdf'
