@@ -1,14 +1,31 @@
 # todo load school types
 # Todo calendar dates
 # todo instructional movie
+# test won't load wrong dates
+# todo highlight date field change when editing count
+# todo cannot undo manual edit to count
+# TODO need to better handle pushing delete on dates column or manually editing count
+# when in a different data mode (and properly handling undos/redos)
+# TODO need default enter new menu item to bring up calendar
 
 # Mention:
-# automatic resorting
+# back up frequently
+# works with CSVs
+# export to excel
+# manual editing
+# undo/redo
+# plant based and veg
+# date mode
 # loading a PDF with multiple pages
 # loading multiple PDFs - reenter school in between
+# automatic resorting
+# cannot manually modify date field
+
 # random details
+# file types accepted for menus
 # delete will work on main table first if focused, not the other places to type
 # Undo redo/enter needs main table not to be focused
+# Insertion won't overwrite PB or veg status
 # closing requires focusing
 
 # not doing
@@ -29,7 +46,8 @@ import sys
 logging.basicConfig(filename='menu_scanner.log', encoding='utf-8', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 # dd/mm/YY H:M:S
-logger.info('Starting ' + datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+now = datetime.datetime.now()
+logger.info('Starting ' + now.strftime("%d/%m/%Y %H:%M:%S"))
 
 if hasattr(sys, '_MEIPASS'):
     logger.debug('Path: ' + str(sys.path))
@@ -253,6 +271,49 @@ class DeleteRowsAction:
     def undo(self):
         self.table_model.insert_rows_helper(self.rows, self.old_row_contents)
 
+class MyTableView(Widgets.QTableView):
+    def __init__(self, data_mode_buttons, undo_redo):
+        super().__init__()
+        self.data_mode_buttons = data_mode_buttons
+        self.undo_redo = undo_redo
+
+    def edit(self, index, trigger, event):
+        if (
+            index.column() == 1 and
+            event is not None and
+            event.type() == Core.QEvent.MouseButtonDblClick and
+            self.data_mode_buttons.checkedId() == 1 and
+            self.model() is not None
+        ):
+            curr_dates = self.model().df.with_row_count('row_nr').filter(pl.col('row_nr') == index.row())['dates'].item()
+            curr_qdates = []
+            if len(curr_dates.strip()) > 0:
+                for curr_date in curr_dates.split(','):
+                    split_date = curr_date.split('/')
+                    curr_qdates.append(Core.QDate(int(split_date[2]), int(split_date[0]), int(split_date[1])))
+
+            calendar_dialog = MyCalendarDialog(curr_qdates)
+            ret_code = calendar_dialog.exec()
+            if ret_code != Widgets.QDialog.Rejected:
+                assert ret_code == Widgets.QDialog.Accepted
+                self.undo_redo.do(SetDatasAction(
+                    self.model(),
+                    [self.model().createIndex(index.row(), 1), self.model().createIndex(index.row(), 2)],
+                    [len(calendar_dialog.dates()), ','.join(f'{date.month()}/{date.day()}/{date.year()}' for date in calendar_dialog.dates())]
+                ))
+
+            return False
+
+        if (
+            index.column() == 2 and
+            event is not None and
+            event.type() == Core.QEvent.MouseButtonDblClick
+        ):
+            # cannot manually change date field
+            return False
+        
+        return super().edit(index, trigger, event)
+
 class PolarsTableModel(Core.QAbstractTableModel):
     def __init__(self, df, df_schema, out_fname, undo_redo):
         super().__init__()
@@ -288,7 +349,10 @@ class PolarsTableModel(Core.QAbstractTableModel):
             return Core.QVariant()
 
         if role in (Core.Qt.DisplayRole, Core.Qt.EditRole):
-            return Core.QVariant(self.df[index.row(), (index.column() + 2) % (self.df.shape[1] - 1)])
+            if index.column() != 2:
+                return Core.QVariant(self.df[index.row(), (index.column() + 2) % (self.df.shape[1] - 1)])
+            else:
+                return Core.QVariant('Y' if self.df[index.row(), (index.column() + 2) % (self.df.shape[1] - 1)] != '' else 'N')
 
         if role == Core.Qt.BackgroundRole:
             uid = self.df.with_row_count('row_nr').filter(pl.col('row_nr') == index.row())['uid'].item()
@@ -298,7 +362,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
         return Core.QVariant()
 
     def setData(self, index, value, role):
-        print('in set data')
+        #print('in set data')
         if role != Core.Qt.EditRole:
             return False
         if index.row() >= self.df.shape[0] or index.column() >= self.df.shape[1] - 1:
@@ -314,10 +378,14 @@ class PolarsTableModel(Core.QAbstractTableModel):
         if old_value != value:
             self.df[row, (column + 2) % (self.df.shape[1] - 1)] = value
 
+            new_highlight_cells = [(row_uid, column)]
+            if column == 1:
+                self.df[row, 4] = ''
+                new_highlight_cells.append((row_uid, 2))
+            self.update_highlight(new_highlight_cells)
+
             self.save()
             self.reorganize()
-            new_highlight_cells = [(row_uid, column)]
-            self.update_highlight(new_highlight_cells)
         
         return old_value
 
@@ -330,8 +398,8 @@ class PolarsTableModel(Core.QAbstractTableModel):
     def delete_rows_helper(self, rows):
         self.beginRemoveRows(Core.QModelIndex(), min(rows), max(rows))
         deleted_row_contents = self.df.with_row_count('row_nr').filter(pl.col('row_nr').is_in(rows))
-        print('in delete_rows_helper, deleting: ', deleted_row_contents)
-        print('current df before deletion', self.df)
+        #print('in delete_rows_helper, deleting: ', deleted_row_contents)
+        #print('current df before deletion', self.df)
         self.df = self.df.with_row_count('row_nr').filter(~pl.col('row_nr').is_in(rows)).drop('row_nr')
         self.update_highlight([])
         self.endRemoveRows()
@@ -342,8 +410,8 @@ class PolarsTableModel(Core.QAbstractTableModel):
     # assumes rows are contiguous
     def insert_rows_helper(self, rows, deleted_row_contents):
         self.beginInsertRows(Core.QModelIndex(), min(rows), max(rows))
-        print('in insert rows helper, reinserting: ', deleted_row_contents)
-        print('current df before reinsertion', self.df)
+        #print('in insert rows helper, reinserting: ', deleted_row_contents)
+        #print('current df before reinsertion', self.df)
         self.df = pl.concat([
             self.df.with_row_count('row_nr').with_columns([
                 pl.when(
@@ -373,8 +441,9 @@ class PolarsTableModel(Core.QAbstractTableModel):
         assert row.shape[0] <= 1
 
         if row.shape[0] == 0:
+            
             self.beginInsertRows(Core.QModelIndex(), 0, 0)
-            print('inserting new menu item')
+            #print('inserting new menu item')
             next_uid = self.get_next_uid()
             self.df = pl.DataFrame([[*menu_item_data, next_uid]], schema=self.df_schema).vstack(self.df)
             self.endInsertRows()
@@ -382,9 +451,11 @@ class PolarsTableModel(Core.QAbstractTableModel):
             new_highlight_cells = []
             for col in range(self.df.shape[1] - 1):
                 new_highlight_cells.append((next_uid, col))
+            possibly_removed_dates = None
         else:
             uid = row['uid'].item()
-            print('inserting preexstining menu item')
+            #print('inserting preexstining menu item')
+            # TODO and check for date insert instead
             self.df = self.df.with_columns([
                 pl.when(
                     pl.col('uid') != uid
@@ -398,12 +469,29 @@ class PolarsTableModel(Core.QAbstractTableModel):
             self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
             new_highlight_cells = [(uid, 1)]
 
+            possibly_removed_dates = self.df.filter(pl.col('uid') == uid)['dates'].item()
+            print('Possibly removed dates', possibly_removed_dates)
+            if possibly_removed_dates != '':
+                self.df = self.df.with_columns([
+                    pl.when(
+                        pl.col('uid') != uid
+                    ).then(
+                        pl.col('dates')
+                    ).otherwise(
+                        pl.lit('')
+                    )
+                ])
+                cell = self.createIndex(row['row_nr'].item(), 2)
+                self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
+                new_highlight_cells.append((uid, 2))
+
         self.update_highlight(new_highlight_cells)
 
         self.save()
-        print(self.df)
+        return possibly_removed_dates
+        #print(self.df)
 
-    def remove_menu_item_data(self, menu_item_data):
+    def remove_menu_item_data(self, menu_item_data, possibly_removed_dates):
         row = self.df.with_row_count('row_nr').filter(
             (pl.col('school_district').str.to_uppercase() == menu_item_data[0].upper()) &
             (pl.col('district_type').str.to_uppercase() == menu_item_data[1].upper()) &
@@ -416,7 +504,8 @@ class PolarsTableModel(Core.QAbstractTableModel):
             new_highlight_cells = []
         else:
             uid = row['uid'].item()
-            print('removing menu item')
+            #print('removing menu item')
+            # TODO add check for resetting old dates
             self.df = self.df.with_columns([
                 pl.when(
                     pl.col('uid') != uid
@@ -440,7 +529,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
                 cell = self.createIndex(row, cell[1])
                 self.dataChanged.emit(cell, cell, [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
-            print(old_highlight_cells)
+            #print(old_highlight_cells)
             for cell in old_highlight_cells:
                 temp_df = self.df.with_row_count('row_nr').filter(pl.col('uid') == cell[0])
                 if temp_df.shape[0] == 0:
@@ -470,7 +559,7 @@ class PolarsTableModel(Core.QAbstractTableModel):
         self.reorganize()
 
     def reorganize(self):
-        print('reorganizing, preorganize df', self.df)
+        #print('reorganizing, preorganize df', self.df)
         self.df = self.df.sort(by=[
             pl.col('school_district').str.to_uppercase() != self.curr_district.upper(),
             (pl.col('school_district').str.to_uppercase() != self.curr_district.upper()) | (pl.col('district_type').str.to_uppercase() != self.curr_district_type.upper()),
@@ -481,9 +570,9 @@ class PolarsTableModel(Core.QAbstractTableModel):
                 (pl.col('school_district').str.to_uppercase() != self.curr_district.upper()) | (pl.col('district_type').str.to_uppercase() != self.curr_district_type.upper())
             ).then(
                 pl.col('menu_item').str.to_uppercase()
-            ).otherwise('')
+            ).otherwise(pl.lit(''))
         ])
-        print('reorganizing, posrtorganize df', self.df)
+        #print('reorganizing, posrtorganize df', self.df)
         self.dataChanged.emit(self.createIndex(0,0), self.createIndex(self.df.shape[0], self.df.shape[1] - 1), [Core.Qt.DisplayRole, Core.Qt.BackgroundRole])
 
     def get_next_uid(self):
@@ -524,11 +613,11 @@ class InsertNewMenuItemAction:
         self.palette = palette
 
     def do(self):
-        self.table_model.insert_new_menu_item(self.menu_item_data)
+        self.possibly_removed_dates = self.table_model.insert_new_menu_item(self.menu_item_data)
         self.menu_item_edit.setPalette(self.palette)
 
     def undo(self):
-        self.table_model.remove_menu_item_data(self.menu_item_data)
+        self.table_model.remove_menu_item_data(self.menu_item_data, self.possibly_removed_dates)
         self.menu_item_edit.setPalette(self.palette)
 
 class PreviousMenuAction:
@@ -552,8 +641,9 @@ class NextMenuAction:
         self.window.previous_menu()
 
 class MyCalendarWidget(Widgets.QCalendarWidget):
-    def __init__(self):
+    def __init__(self, init_qdates):
         super().__init__()
+
         self.setVerticalHeaderFormat(self.NoVerticalHeader)
         self.setDateEditEnabled(False)
         self.setFirstDayOfWeek(Core.Qt.Sunday)
@@ -568,24 +658,12 @@ class MyCalendarWidget(Widgets.QCalendarWidget):
         self.unhighlight_format = Gui.QTextCharFormat()
         self.unhighlight_format.setBackground(Gui.QColor(Core.Qt.white))
         self.unhighlight_format.setForeground(Gui.QColor(Core.Qt.black))
-
-        #self.setDateTextFormat(self.selectedDate(), Gui.QTextCharFormat())
-        #self.setSelectedDate(Core.QDate())
-#        selection = self.selectedDate()
-#        if selection.dayOfWeek() >= 6:
-#            color = Core.Qt.red
-#        else:
-#            color = Core.Qt.black
-#        hide_init_select_format = Gui.QTextCharFormat()
-#        hide_init_select_format.setForeground(Gui.QBrush(Gui.QColor(color)))
-#        hide_init_select_format.setBackground(Gui.QBrush(Gui.QColor(Core.Qt.white)))
-#        self.setDateTextFormat(selection, hide_init_select_format)
-#        self.setStyleSheet('''
-#            QCalendarWidget QAbstractItemView {
-#                selection-background-color: white;
-#                selection-color: black;
-#            }
-#        ''')
+        
+        if len(init_qdates) > 0:
+            self.setSelectedDate(init_qdates[0])
+            self.selected_dates = init_qdates
+            for date in self.selected_dates:
+                self.setDateTextFormat(date, self.highlight_format)
 
     def date_selected(self, date):
         if Widgets.QApplication.instance().keyboardModifiers() & Core.Qt.ShiftModifier:
@@ -596,15 +674,14 @@ class MyCalendarWidget(Widgets.QCalendarWidget):
             for date2 in self.selected_dates:
                 self.setDateTextFormat(date2, self.unhighlight_format)
             self.selected_dates = [date]
-        print(f'selected dates {self.selected_dates}')
 
 class MyCalendarDialog(Widgets.QDialog):
-    def __init__(self):
+    def __init__(self, init_qdates):
         super().__init__()
         self.setSizeGripEnabled(True)
         central_layout = Widgets.QVBoxLayout()
         self.setLayout(central_layout)
-        self.calendar_widget = MyCalendarWidget()
+        self.calendar_widget = MyCalendarWidget(init_qdates)
         self.calendar_widget.installEventFilter(self)
         central_layout.addWidget(self.calendar_widget)
         button = Widgets.QPushButton("Done", self)
@@ -612,12 +689,33 @@ class MyCalendarDialog(Widgets.QDialog):
         button.clicked.connect(self.accept)
         button.installEventFilter(self)
         central_layout.addWidget(button)
+        Widgets.QApplication.instance().installEventFilter(self)
 
     def keyPressEvent(self, event):
-        # TODO make this work
         if event.type() == Core.QEvent.KeyPress and \
            event.key() == Core.Qt.Key_Return:
+            self.key_press_consumed = True
+            Widgets.QApplication.instance().removeEventFilter(self)
             self.accept()
+        elif event.type() == Core.QEvent.KeyPress and \
+           event.key() == Core.Qt.Key_Escape:
+            self.key_press_consumed = True
+            Widgets.QApplication.instance().removeEventFilter(self)
+            self.reject()
+        elif event.type() == Core.QEvent.KeyPress and \
+           event.key() in (Core.Qt.Key_Left, Core.Qt.Key_Right, Core.Qt.Key_Up, Core.Qt.Key_Down):
+            # consume this so it's ignored by the CalendarWidget
+            self.key_press_consumed = True
+        else:
+            self.key_press_consumed = False
+
+    def eventFilter(self, source, event):
+        if event.type() == Core.QEvent.KeyPress:
+            self.keyPressEvent(event)
+            if self.key_press_consumed:
+                return True
+
+        return super().eventFilter(source, event)
 
     def dates(self):
         return self.calendar_widget.selected_dates
@@ -763,7 +861,7 @@ class MyWindow(Widgets.QMainWindow):
         self.data_mode_buttons.buttonClicked.connect(lambda _ : self.change_count_layout_visibility())
        
         self.table_model = None
-        self.table_view = Widgets.QTableView()
+        self.table_view = MyTableView(self.data_mode_buttons, self.undo_redo)
         self.table_view.installEventFilter(self)
         self.table_view.setCornerButtonEnabled(False)
         right_column.addWidget(self.table_view, 1)
@@ -774,14 +872,6 @@ class MyWindow(Widgets.QMainWindow):
 
         self.school_name_edit.textEdited.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()) if self.table_model else None)
         self.school_type_select.currentTextChanged.connect(lambda _ : self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip()) if self.table_model else None)
-
-        calendar_dialog = MyCalendarDialog()
-        ret_code = calendar_dialog.exec()
-        if ret_code == Widgets.QDialog.Rejected:
-            print("rejected")
-        else:
-            assert ret_code == Widgets.QDialog.Accepted
-            print(f"accepted with dates {calendar_dialog.dates()}")
 
     def change_count_layout_visibility(self):
         for widget in self.count_label, self. item_count, self.item_count_sticky:
@@ -808,6 +898,16 @@ class MyWindow(Widgets.QMainWindow):
         for button in self.choose_new_table_button, self.load_existing_table_button:
             button.setPalette(self.application.palette())
 
+    def fail_load_table_date_format(self, row, date_num):
+        box = Widgets.QMessageBox()
+        box.setText(
+            f'The #{date_num + 1} date in row {row} of the table you asked to load '
+            'is improperly formatted. (The dates column should contain a comma separated '
+            'list of dates in the format MM/DD/YYYY.) '
+            'Aborting loading the table.'
+        )
+        box.exec()
+
     def load_existing_table(self):
         fname = Widgets.QFileDialog.getOpenFileName(self, "CSV file to load", filter="CSV files (*.csv)")[0]
         if fname:
@@ -815,14 +915,27 @@ class MyWindow(Widgets.QMainWindow):
             if list(df.columns) != list(self.df_schema.keys()):
                 box = Widgets.QMessageBox()
                 box.setText(
-                    f"Can only load CSVs with exactly the columns {list(self.df_schema.keys())}. "
-                    f"Instead, was asked to load a CSV with the columns {list(df.columns)}. "
-                    "Aborting loading the CSV."
+                    f'Can only load tables with exactly the columns {list(self.df_schema.keys())}. '
+                    f'Instead, was asked to load a CSV with the columns {list(df.columns)}. '
+                    'Aborting loading the table.'
                 )
                 box.exec()
                 return
-            # TODO don't crash if not true
-            assert list(df.columns) == list(self.df_schema.keys())
+            # make sure dates are properly formatted
+            for row in range(df.shape[0]):
+                dates = df[row, 'dates']
+                if len(dates.strip()) > 0:
+                    for date_num, date in enumerate(dates.split(',')):
+                        fields = date.split('/')
+                        if len(fields) != 3:
+                            self.fail_load_table_date_format(row, date_num)
+                            return
+                        try:
+                            datetime.datetime(int(fields[2]), int(fields[0]), int(fields[1]))
+                        except ValueError:
+                            self.fail_load_table_date_format(row, date_num)
+                            return
+
             self.table_model = PolarsTableModel(df, self.df_schema, fname, self.undo_redo)
             self.table_model.focus_school_district(self.school_name_edit.text().strip(), self.school_type_select.currentText().strip())
             self.table_view.setModel(self.table_model)
@@ -946,8 +1059,8 @@ class MyWindow(Widgets.QMainWindow):
 
     # from https://stackoverflow.com/questions/27676034/pyqt-place-scaled-image-in-centre-of-label
     def eventFilter(self, source, event):
-        if event.type() == Core.QEvent.KeyPress:
-            print('in event filter', source, event)
+        #if event.type() == Core.QEvent.KeyPress:
+            #print('in event filter', source, event)
         if (source is self.curr_image_widget and event.type() == Core.QEvent.Resize and self.curr_image_widget is not None):
             # re-scale the pixmap when the label resizes
             ratio = min(self.curr_image_widget.width()/self.base_widths[self.curr_menu_idx][self.curr_menu_page], self.curr_image_widget.height()/self.base_heights[self.curr_menu_idx][self.curr_menu_page])
@@ -964,15 +1077,15 @@ class MyWindow(Widgets.QMainWindow):
 
         if self.key_press_consumed:
 #            if event.type() == Core.QEvent.KeyPress:
-#                print('returning true from event filter', source, event)
+#                #print('returning true from event filter', source, event)
             return True
 
 #        if event.type() == Core.QEvent.KeyPress:
-#            print('returning super() from event filter', source, event)
+#            #print('returning super() from event filter', source, event)
         return super().eventFilter(source, event)
 
     def keyPressEvent(self, event):
-        print('in key press event', event)
+        #print('in key press event', event)
         if event.type() != Core.QEvent.KeyPress:
             self.key_press_consumed = False
             return
@@ -1027,27 +1140,33 @@ class MyWindow(Widgets.QMainWindow):
                 self.key_press_consumed = True
                 return
 
-            menu_item_data = [
-                self.school_name_edit.text(),
-                self.school_type_select.currentText(),
-                self.menu_item_edit.text(),
-                int(self.item_count.text()),
-                ['Y', '?', 'N'][self.plant_based_buttons.checkedId()],
-                ['Y', '?', 'N'][self.veg_buttons.checkedId()]
-            ]
-            self.undo_redo.do(InsertNewMenuItemAction(self.table_model, menu_item_data, self.menu_item_edit, self.application.palette()))
+            if self.data_mode_buttons.checkedId() == 0:
+                menu_item_data = [
+                    self.school_name_edit.text(),
+                    self.school_type_select.currentText(),
+                    self.menu_item_edit.text(),
+                    int(self.item_count.text()),
+                    '',
+                    ['Y', '?', 'N'][self.plant_based_buttons.checkedId()],
+                    ['Y', '?', 'N'][self.veg_buttons.checkedId()]
+                ]
+                self.undo_redo.do(InsertNewMenuItemAction(self.table_model, menu_item_data, self.menu_item_edit, self.application.palette()))
 
-            if not self.item_count_sticky.isChecked():
-                self.item_count.setText("1")
-            for col, should_not_resize in [(0, self.manual_resize_menu_item), (4, self.manual_resize_school_district), (5, self.manual_resize_district_type)]:
-                if not should_not_resize:
-                    self.table_view.resizeColumnToContents(col)
-            self.menu_item_edit.clear()
-            self.plant_based_buttons.button(2).click()
-            self.veg_buttons.button(2).click()
-            self.curr_image_widget.temp_highlighted = []
-            self.key_press_consumed = True
-            return
+                if not self.item_count_sticky.isChecked():
+                    self.item_count.setText("1")
+                for col, should_not_resize in [(0, self.manual_resize_menu_item), (4, self.manual_resize_school_district), (5, self.manual_resize_district_type)]:
+                    if not should_not_resize:
+                        self.table_view.resizeColumnToContents(col)
+                self.menu_item_edit.clear()
+                self.plant_based_buttons.button(2).click()
+                self.veg_buttons.button(2).click()
+                self.curr_image_widget.temp_highlighted = []
+                self.key_press_consumed = True
+                return
+            else:
+                # TODO
+                self.key_press_consumed = True
+                return
             
         # switch plant based status
         if (
@@ -1131,6 +1250,7 @@ df_schema={
     'district_type': str,
     'menu_item': str,
     'count': int,
+    'dates': str,
     'plant_based': str,
     'vegetarian': str
 }
