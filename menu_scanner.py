@@ -2,48 +2,75 @@
 # todo instructional movie
 
 # Mention:
+# don't know how tech savvy you are or aren't, what your expectations or desired workflow will be
 # suppose you have menus
-#basic overview
-# new file
+# basic overview
+# new table
 # load menu
 #   will freeze briefly while this is happen
 # Fill in district name and type
-# go
+# click and enter loop
+#   turn green as you go
 # show file
-# quit
-# works with CSVs
-# export to excel
-# changes won't propogate
+#  works with CSVs
 # back up frequently
+#  could be copy, could be in a place that has backups
+# quit
+# export to excel
+#  data -> left -> From Text/CSV
+#  save
+#  changes won't propogate
+#  don't modify existing CSVs
+# restart
 # reload file
-#  won't keep highlighting - finish full PDFs, keep track of what you've done
-#  missed words
-#  checking words that might be wrong
-#  highlighting things that aren't words
+#   backup before doing so
+#   won't keep highlighting - finish full PDFs, keep track of what you've done
+# load new menu Irvine
+#  click and enter
+#  resort 
+# word parsing isn't perfect
+#   missed words
+#   checking words that might be wrong
+#   words you don't want
+#   highlighting things that aren't words
 # shift selection
 # loading a PDF with multiple pages
+#  images or PDFs
 #  reminder this will freeze for a bit
 #  reenter school
 # loading multiple PDFs - reenter school in between
 # undo/redo
 # plant based and veg
+#   only sensible combinations
 #   Don't overwrite existing settings
 #   reset after use
 # date mode
+#  insert -> ask for date
+#  click on the date you want
+#  enter to accept
+#  esc to abort
+#  no inferring dates from the menu
 #  default year and month
 #  years should be YYYY
-#  losing date window in background (also error popup for loading CSVs)
+#  losing date window in background (also error popup for loading CSVs) ( can press esc)
+#  shift to select or deselct multiple dates
+#  will not highlight multiple items on the menu
 # manual editing
 #   won't prevent you from doing something silly
-# automatic resorting
-# cannot manually modify date field
 
+# can always reach out to Nora and ask her to relay questions - double check with Nora
+# can always reach out to me jonathan.margoliash@gmail.com
+
+# log in case of problems
 # random details
-# file types accepted for menus
+#   automatic resorting
+#   modifying count will remove date
+# changing data type will not add up
+# cannot manually modify date field
 # delete will work on main table first if focused, not the other places to type
 # Undo redo/enter needs main table not to be focused
-# Insertion won't overwrite PB or veg status
 # closing requires focusing
+# questions, feedback, fits your workflow, errors or bugs
 
 # not doing
 # highlighting deleted rows somehow
@@ -685,9 +712,14 @@ class MyCalendarWidget(Widgets.QCalendarWidget):
 
     def date_selected(self, date):
         if Widgets.QApplication.instance().keyboardModifiers() & Core.Qt.ShiftModifier:
-            self.selected_dates.append(date)
-            for date2 in self.selected_dates:
-                self.setDateTextFormat(date2, self.highlight_format)
+            if date not in self.selected_dates:
+                self.selected_dates.append(date)
+                for date2 in self.selected_dates:
+                    self.setDateTextFormat(date2, self.highlight_format)
+            elif len(self.selected_dates) > 1:
+                self.setDateTextFormat(date, self.unhighlight_format)
+                self.selected_dates.remove(date)
+                self.setSelectedDate(self.selected_dates[0])
         else:
             for date2 in self.selected_dates:
                 self.setDateTextFormat(date2, self.unhighlight_format)
