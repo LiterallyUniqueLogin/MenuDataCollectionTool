@@ -65,7 +65,7 @@
 # can always reach out to Nora and ask her to relay questions
 # can always reach out to me jonathan.margoliash@gmail.com
 
-# github link https://github.com/LiterallyUniqueLogin/MenuScanner
+# github link https://github.com/LiterallyUniqueLogin/MenuDataCollectionTool
 # log in case of problems
 # random details
 #   automatic resorting
@@ -85,6 +85,19 @@
 # https://www.pythontutorial.net/pyqt/
 # and
 # https://superuser.com/questions/1791373/location-of-wsl-home-directory-in-windows
+
+# compiling into a Windows exe file
+# get a miniconda command prompt on windows
+# install the dependencies of this program into a conda environment, plus pyinstaller
+# run
+# pyinstaller $script_dir\menu_scanner.py \
+#        --onefile \
+#        --windowed \
+#        --add-data $windows_tesseract_install_dir\tesseract.exe:. \
+#        --add-data eng.traineddata:. \
+#        --clean 
+# eng.traineddata can be downloaded from https://github.com/tesseract-ocr/tessdata
+# the command prompt command where can be used to find tesseract.exe
 
 import datetime
 import logging
